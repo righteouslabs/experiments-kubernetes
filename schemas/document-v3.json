@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Document V3",
+  "description": "Adds priority levels and structured metadata for operational routing",
+  "type": "object",
+  "required": ["id", "schemaVersion", "title", "body", "author", "tags", "priority", "metadata", "createdAt"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 3
+    },
+    "title": {
+      "type": "string"
+    },
+    "body": {
+      "type": "string"
+    },
+    "author": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["HIGH", "MEDIUM", "LOW"]
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["source", "region", "correlationId"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["web", "mobile", "api", "batch"]
+        },
+        "region": {
+          "type": "string"
+        },
+        "correlationId": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,285 @@
+###############################################################################
+# Multi-Version Microservice Demo — Full Kubernetes (MicroShift)
+#
+# One command brings up MicroShift, builds Java images, loads them into the
+# cluster, and deploys Kafka + MongoDB + Schema Registry + Dapr + versioned
+# consumer services — all as native Kubernetes pods.
+#
+# Usage:
+#   docker compose up --detach
+#   export KUBECONFIG=$(pwd)/microshift-docker-compose/kubeconfig
+#   kubectl -n versioned-demo get pods            # check status
+#   kubectl -n versioned-demo logs -l app=producer -f   # watch producer
+#   docker compose down -v                        # full teardown
+#
+# Standalone (no K8s, pure Docker):
+#   docker compose -f docker-compose.standalone.yml up --build
+###############################################################################
+
+x-microshift-image: &microshift-image
+  ghcr.io/microshift-io/microshift:4.21.0_g29f429c21_4.21.0_okd_scos.ec.15
+
+services:
+
+  # =========================================================================
+  # MicroShift cluster (Kubernetes in Docker)
+  # =========================================================================
+
+  lvm-setup:
+    image: *microshift-image
+    container_name: microshift-lvm-setup
+    privileged: true
+    volumes:
+      - /dev:/dev
+      - microshift-data:/var/lib/microshift
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        VG_NAME="myvg1"
+        BACKING_FILE="/var/lib/microshift/lvm-backing.img"
+        if vgs "$$VG_NAME" &>/dev/null; then
+            echo "Volume group $$VG_NAME already exists, skipping"
+            exit 0
+        fi
+        truncate -s 1G "$$BACKING_FILE"
+        LOOP=$$(losetup --find --show "$$BACKING_FILE")
+        vgcreate -f -y "$$VG_NAME" "$$LOOP"
+        echo "LVM setup complete"
+
+  microshift:
+    image: *microshift-image
+    container_name: microshift
+    hostname: microshift
+    privileged: true
+    tty: true
+    cpus: 2
+    mem_limit: 8g
+    memswap_limit: 8g
+    ulimits:
+      nofile:
+        soft: 524288
+        hard: 524288
+    depends_on:
+      lvm-setup:
+        condition: service_completed_successfully
+    ports:
+      - "6443:6443"
+    volumes:
+      - /dev:/dev
+      - microshift-data:/var/lib/microshift
+      - ./microshift-docker-compose/config/api_server.yaml:/etc/microshift/config.d/api_server.yaml:ro
+      - ./microshift-docker-compose/config/storage.yaml:/etc/microshift/config.d/01-disable-storage-csi.yaml:ro
+      - ./microshift-docker-compose/manifests/topolvm-fix:/etc/microshift/manifests.d/002-topolvm-fix:ro
+    tmpfs:
+      - /var/lib/containers
+      - /tmp
+      - /run
+    dns_search:
+      - "."
+    healthcheck:
+      test: ["CMD", "test", "-f", "/var/lib/microshift/resources/kubeadmin/microshift/kubeconfig"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  kubeconfig:
+    image: alpine:latest
+    container_name: microshift-kubeconfig
+    depends_on:
+      microshift:
+        condition: service_healthy
+    volumes:
+      - microshift-data:/var/lib/microshift:ro
+      - ./microshift-docker-compose:/output
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        sed 's|server: https://microshift:6443|server: https://localhost:6443|' \
+          /var/lib/microshift/resources/kubeadmin/microshift/kubeconfig \
+          | sed '/certificate-authority-data:/d' \
+          | sed 's|server: https://localhost:6443|insecure-skip-tls-verify: true\n    server: https://localhost:6443|' \
+          > /output/kubeconfig
+        echo "kubeconfig written to ./microshift-docker-compose/kubeconfig"
+
+  # =========================================================================
+  # Phase 1: Build custom Java images and load into MicroShift's CRI-O
+  # =========================================================================
+
+  image-builder:
+    image: docker:27-cli
+    container_name: demo-image-builder
+    depends_on:
+      microshift:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./producer:/workspace/producer:ro
+      - ./consumer-service:/workspace/consumer-service:ro
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+
+        echo "============================================"
+        echo " Phase 1: Building & loading images"
+        echo "============================================"
+
+        echo ""
+        echo "--- Building document-producer ---"
+        docker build -t document-producer:latest /workspace/producer
+
+        echo ""
+        echo "--- Building document-consumer ---"
+        docker build -t document-consumer:latest /workspace/consumer-service
+
+        echo ""
+        echo "--- Pre-pulling infrastructure images ---"
+        docker pull confluentinc/cp-zookeeper:7.5.0
+        docker pull confluentinc/cp-kafka:7.5.0
+        docker pull confluentinc/cp-schema-registry:7.5.0
+        docker pull mongo:7.0
+        docker pull daprio/placement:1.12.4
+        docker pull daprio/daprd:1.12.4
+
+        echo ""
+        echo "--- Loading ALL images into MicroShift (podman -> CRI-O) ---"
+        for img in \
+            document-producer:latest \
+            document-consumer:latest \
+            confluentinc/cp-zookeeper:7.5.0 \
+            confluentinc/cp-kafka:7.5.0 \
+            confluentinc/cp-schema-registry:7.5.0 \
+            mongo:7.0 \
+            daprio/placement:1.12.4 \
+            daprio/daprd:1.12.4; do
+          echo "  Loading $$img..."
+          docker save "$$img" | docker exec -i microshift podman load
+        done
+
+        echo ""
+        echo "--- Verifying images in MicroShift ---"
+        docker exec microshift crictl images | grep -E "document|confluent|mongo|dapr"
+
+        echo ""
+        echo "Phase 1 complete."
+
+  # =========================================================================
+  # Phase 2: Deploy everything to the MicroShift Kubernetes cluster
+  # =========================================================================
+
+  cluster-deploy:
+    image: bitnami/kubectl:latest
+    container_name: demo-cluster-deploy
+    user: "0:0"
+    depends_on:
+      image-builder:
+        condition: service_completed_successfully
+    volumes:
+      - microshift-data:/var/lib/microshift:ro
+      - ./k8s:/k8s:ro
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        export KUBECONFIG=/var/lib/microshift/resources/kubeadmin/microshift/kubeconfig
+
+        echo "============================================"
+        echo " Phase 2: Deploying to MicroShift"
+        echo "============================================"
+
+        # Wait for the API server to be fully responsive (not just kubeconfig file existing)
+        echo ""
+        echo "[0/6] Waiting for API server..."
+        for i in $$(seq 1 30); do
+            if kubectl get nodes >/dev/null 2>&1; then
+                echo "API server ready."
+                break
+            fi
+            echo "  Attempt $$i/30 - API server not ready yet, waiting 10s..."
+            sleep 10
+        done
+        kubectl get nodes
+
+        # --- Namespace (with permissive pod security for demo) ---
+        echo ""
+        echo "[1/6] Creating namespace and configuring security..."
+        kubectl apply -f /k8s/namespace.yaml
+        kubectl label namespace versioned-demo \
+          pod-security.kubernetes.io/enforce=privileged \
+          pod-security.kubernetes.io/warn=privileged \
+          --overwrite
+
+        # Grant the default SA the privileged SCC so infrastructure images
+        # (Confluent, Mongo) can run as root or their expected UIDs
+        echo "Binding privileged SCC to default service account..."
+        kubectl patch scc privileged --type='json' \
+          -p='[{"op":"add","path":"/users/-","value":"system:serviceaccount:versioned-demo:default"}]' 2>/dev/null || true
+        kubectl patch scc anyuid --type='json' \
+          -p='[{"op":"add","path":"/users/-","value":"system:serviceaccount:versioned-demo:default"}]' 2>/dev/null || true
+
+        # Brief pause for SCC admission cache to update
+        sleep 5
+
+        # --- Dapr placement service + component ConfigMap ---
+        echo ""
+        echo "[2/6] Deploying Dapr placement service..."
+        kubectl apply -f /k8s/dapr/
+
+        # --- Infrastructure (Kafka + ZooKeeper + Schema Registry + MongoDB) ---
+        echo ""
+        echo "[3/6] Deploying infrastructure..."
+        kubectl apply -f /k8s/infrastructure/
+
+        echo "Waiting for ZooKeeper..."
+        kubectl -n versioned-demo wait --for=condition=available deployment/zookeeper --timeout=600s
+
+        echo "Waiting for Kafka..."
+        kubectl -n versioned-demo wait --for=condition=available deployment/kafka --timeout=600s
+
+        echo "Waiting for Schema Registry..."
+        kubectl -n versioned-demo wait --for=condition=available deployment/schema-registry --timeout=600s
+
+        echo "Waiting for MongoDB..."
+        kubectl -n versioned-demo wait --for=condition=available deployment/mongodb --timeout=600s
+
+        echo "Infrastructure ready."
+
+        # --- Producer ---
+        echo ""
+        echo "[4/6] Deploying producer..."
+        kubectl apply -f /k8s/services/producer.yaml
+
+        # --- Versioned consumers ---
+        echo ""
+        echo "[5/6] Deploying versioned consumers..."
+        kubectl apply -f /k8s/services/consumer-v1.yaml
+        kubectl apply -f /k8s/services/consumer-v2.yaml
+        kubectl apply -f /k8s/services/consumer-v3.yaml
+
+        # --- Wait for everything ---
+        echo ""
+        echo "[6/6] Waiting for all services to be ready..."
+        kubectl -n versioned-demo wait --for=condition=available deployment/producer     --timeout=300s
+        kubectl -n versioned-demo wait --for=condition=available deployment/consumer-v1  --timeout=300s
+        kubectl -n versioned-demo wait --for=condition=available deployment/consumer-v2  --timeout=300s
+        kubectl -n versioned-demo wait --for=condition=available deployment/consumer-v3  --timeout=300s
+
+        echo ""
+        echo "============================================"
+        echo " All services deployed successfully!"
+        echo "============================================"
+        echo ""
+        kubectl -n versioned-demo get pods
+        echo ""
+        echo "To watch logs:"
+        echo "  export KUBECONFIG=\$$(pwd)/microshift-docker-compose/kubeconfig"
+        echo "  kubectl -n versioned-demo logs -l app=producer -f"
+        echo "  kubectl -n versioned-demo logs -l app=consumer -f"
+
+volumes:
+  microshift-data:

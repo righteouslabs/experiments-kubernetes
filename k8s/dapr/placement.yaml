@@ -1,0 +1,48 @@
+##
+## Dapr Placement Service (self-hosted, no operator required)
+##
+## The placement service is needed for Dapr actors but also provides
+## service discovery for the daprd sidecars.
+##
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dapr-placement
+  namespace: versioned-demo
+  labels:
+    app: dapr-placement
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dapr-placement
+  template:
+    metadata:
+      labels:
+        app: dapr-placement
+    spec:
+      containers:
+        - name: placement
+          image: docker.io/daprio/placement:1.12.4
+          command: ["./placement", "-port", "50006"]
+          ports:
+            - containerPort: 50006
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "50m"
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dapr-placement
+  namespace: versioned-demo
+spec:
+  selector:
+    app: dapr-placement
+  ports:
+    - port: 50006
+      targetPort: 50006

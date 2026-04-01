@@ -1,0 +1,211 @@
+###############################################################################
+# Multi-Version Microservice Demo — Standalone (no Kubernetes)
+#
+# Runs everything as plain Docker containers with Dapr sidecars.
+# For the full Kubernetes experience, use the main docker-compose.yml instead.
+#
+# Usage:
+#   docker compose -f docker-compose.standalone.yml up --build
+#   docker compose -f docker-compose.standalone.yml down -v
+###############################################################################
+
+services:
+
+  # ======================== Infrastructure ========================
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/subjects"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb:
+    image: mongo:7.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ======================== Dapr ========================
+
+  dapr-placement:
+    image: daprio/placement:1.12.4
+    command: ["./placement", "-port", "50006"]
+    ports:
+      - "50006:50006"
+
+  # ======================== Producer ========================
+
+  producer:
+    build: ./producer
+    environment:
+      DAPR_HTTP_PORT: 3500
+      PRODUCER_INTERVAL_MS: 1000
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+
+  producer-dapr:
+    image: daprio/daprd:1.12.4
+    command:
+      [
+        "./daprd",
+        "-app-id", "producer",
+        "-app-port", "8080",
+        "-placement-host-address", "dapr-placement:50006",
+        "-resources-path", "/components",
+        "-log-level", "info",
+      ]
+    volumes:
+      - ./dapr/components:/components:ro
+    depends_on:
+      - dapr-placement
+    network_mode: "service:producer"
+
+  # ======================== Consumer V1 ========================
+
+  consumer-v1:
+    build: ./consumer-service
+    environment:
+      DAPR_HTTP_PORT: 3500
+      SUPPORTED_VERSIONS: "1"
+      SPRING_APPLICATION_NAME: consumer-v1
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+
+  consumer-v1-dapr:
+    image: daprio/daprd:1.12.4
+    command:
+      [
+        "./daprd",
+        "-app-id", "consumer-v1",
+        "-app-port", "8080",
+        "-placement-host-address", "dapr-placement:50006",
+        "-resources-path", "/components",
+        "-log-level", "info",
+      ]
+    volumes:
+      - ./dapr/components:/components:ro
+    depends_on:
+      - dapr-placement
+    network_mode: "service:consumer-v1"
+
+  # ======================== Consumer V2 ========================
+
+  consumer-v2:
+    build: ./consumer-service
+    environment:
+      DAPR_HTTP_PORT: 3500
+      SUPPORTED_VERSIONS: "2"
+      SPRING_APPLICATION_NAME: consumer-v2
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+
+  consumer-v2-dapr:
+    image: daprio/daprd:1.12.4
+    command:
+      [
+        "./daprd",
+        "-app-id", "consumer-v2",
+        "-app-port", "8080",
+        "-placement-host-address", "dapr-placement:50006",
+        "-resources-path", "/components",
+        "-log-level", "info",
+      ]
+    volumes:
+      - ./dapr/components:/components:ro
+    depends_on:
+      - dapr-placement
+    network_mode: "service:consumer-v2"
+
+  # ======================== Consumer V3 ========================
+
+  consumer-v3:
+    build: ./consumer-service
+    environment:
+      DAPR_HTTP_PORT: 3500
+      SUPPORTED_VERSIONS: "3"
+      SPRING_APPLICATION_NAME: consumer-v3
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+
+  consumer-v3-dapr:
+    image: daprio/daprd:1.12.4
+    command:
+      [
+        "./daprd",
+        "-app-id", "consumer-v3",
+        "-app-port", "8080",
+        "-placement-host-address", "dapr-placement:50006",
+        "-resources-path", "/components",
+        "-log-level", "info",
+      ]
+    volumes:
+      - ./dapr/components:/components:ro
+    depends_on:
+      - dapr-placement
+    network_mode: "service:consumer-v3"
+
+volumes:
+  mongodb_data:

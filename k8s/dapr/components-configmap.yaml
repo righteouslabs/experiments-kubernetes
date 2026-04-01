@@ -1,0 +1,43 @@
+##
+## Dapr component definitions stored as a ConfigMap.
+## Mounted into each daprd sidecar at /components.
+##
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dapr-components
+  namespace: versioned-demo
+data:
+  kafka-pubsub.yaml: |
+    apiVersion: dapr.io/v1alpha1
+    kind: Component
+    metadata:
+      name: kafka-pubsub
+    spec:
+      type: pubsub.kafka
+      version: v1
+      metadata:
+        - name: brokers
+          value: "kafka.versioned-demo.svc.cluster.local:9092"
+        - name: authType
+          value: "none"
+        - name: consumerRetryInterval
+          value: "200ms"
+        - name: maxRetryAttempts
+          value: "3"
+
+  mongodb-statestore.yaml: |
+    apiVersion: dapr.io/v1alpha1
+    kind: Component
+    metadata:
+      name: mongodb-statestore
+    spec:
+      type: state.mongodb
+      version: v1
+      metadata:
+        - name: host
+          value: "mongodb.versioned-demo.svc.cluster.local:27017"
+        - name: databaseName
+          value: "documentsdb"
+        - name: collectionName
+          value: "documents"

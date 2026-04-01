@@ -1,0 +1,3 @@
+[submodule "microshift-docker-compose"]
+	path = microshift-docker-compose
+	url = https://github.com/righteouslabs/microshift-docker-compose
