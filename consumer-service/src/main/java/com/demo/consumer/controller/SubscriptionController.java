@@ -17,52 +17,50 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Handles Dapr pub/sub subscriptions using CONTENT-BASED ROUTING.
+ * Dapr content-based pub/sub routing — the consumer's core mechanism.
  *
- * HOW ROUTING WORKS (the key mechanism):
- *
- * 1. The producer publishes each document as a CloudEvents message with
- *    type = "com.demo.document.v{N}" (e.g. "com.demo.document.v2").
- *    All versions go to the SAME Kafka topic ("documents").
- *
- * 2. This controller's /dapr/subscribe endpoint returns routing rules
- *    with CEL expressions that match on the CloudEvents type attribute.
- *    Rules are auto-generated from the SUPPORTED_VERSIONS env var.
- *
- *    Example for SUPPORTED_VERSIONS=1,2:
- *    {
- *      "routes": {
- *        "rules": [
- *          { "match": "event.type == \"com.demo.document.v1\"", "path": "/documents" },
- *          { "match": "event.type == \"com.demo.document.v2\"", "path": "/documents" }
- *        ],
- *        "default": "/documents/unhandled"
- *      }
- *    }
- *
- * 3. The Dapr sidecar evaluates these rules for every incoming message.
- *    - If the CloudEvents type matches a rule -> message is forwarded to /documents
- *    - If no rule matches -> message goes to /documents/unhandled which returns DROP
- *
- * 4. The DROP response tells Dapr to acknowledge the message without processing.
- *    This means the consumer NEVER SEES messages for unsupported versions.
- *    The filtering happens at the Dapr sidecar level, not in application code.
+ * ┌──────────────────────────────────────────────────────────────────┐
+ * │                    HOW ROUTING WORKS                             │
+ * │                                                                  │
+ * │  1. Producer publishes plain JSON to a SINGLE Kafka topic.       │
+ * │     The document contains a "schemaVersion" field (1, 2, or 3).  │
+ * │     Dapr automatically wraps it in a CloudEvents envelope.       │
+ * │                                                                  │
+ * │  2. This consumer's /dapr/subscribe endpoint returns CEL         │
+ * │     routing rules that inspect the ACTUAL PAYLOAD:               │
+ * │                                                                  │
+ * │       event.data.schemaVersion == 2  →  /documents               │
+ * │       (default)                      →  /documents/unhandled     │
+ * │                                                                  │
+ * │  3. The Dapr sidecar evaluates these rules for EVERY message.    │
+ * │     It parses the JSON payload, reads event.data.schemaVersion,  │
+ * │     and either:                                                  │
+ * │       - Forwards matching messages to /documents (processed)     │
+ * │       - Forwards non-matching to /documents/unhandled (DROPped)  │
+ * │                                                                  │
+ * │  4. The application NEVER SEES messages for versions it doesn't  │
+ * │     support. This is what makes non-additive schema changes      │
+ * │     safe — V2 consumers never receive V3 documents that have     │
+ * │     incompatible field structures.                               │
+ * │                                                                  │
+ * │  KEY INSIGHT: Routing is based on data CONTENT inspection by     │
+ * │  the Dapr sidecar, not just envelope metadata. Dapr reads the    │
+ * │  actual schemaVersion field from the parsed JSON payload.        │
+ * └──────────────────────────────────────────────────────────────────┘
  *
  * TO ADD A V4:
- *   - Deploy a new consumer with SUPPORTED_VERSIONS=4
- *   - The routing rules auto-generate: match "com.demo.document.v4" -> /documents
- *   - No code changes needed — just configuration
+ *   Deploy a consumer with SUPPORTED_VERSIONS=4. The CEL rule
+ *   "event.data.schemaVersion == 4" is auto-generated. Done.
  *
  * MULTI-VERSION CONSUMERS:
- *   - Set SUPPORTED_VERSIONS=1,2,3 to handle all versions in one consumer
- *   - Useful for backward-compatible services during migration
+ *   Set SUPPORTED_VERSIONS=1,2 to handle V1 and V2 in one service.
+ *   Two CEL rules are generated, one per version. The service logic
+ *   uses a switch to process each version differently.
  */
 @RestController
 public class SubscriptionController {
 
     private static final Logger log = LoggerFactory.getLogger(SubscriptionController.class);
-
-    private static final String CLOUD_EVENT_TYPE_PREFIX = "com.demo.document.v";
 
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper mapper = new ObjectMapper();
@@ -87,7 +85,6 @@ public class SubscriptionController {
 
     private Set<Integer> supportedVersions;
 
-    // Counters for observability
     private long processedCount = 0;
     private long droppedCount = 0;
 
@@ -97,28 +94,28 @@ public class SubscriptionController {
                 .map(String::trim)
                 .map(Integer::parseInt)
                 .collect(Collectors.toSet());
-        log.info("Consumer [{}] initialized — supported schema versions: {}", appName, supportedVersions);
-        log.info("  Dapr routing rules will match CloudEvents types: {}",
-                supportedVersions.stream()
-                        .map(v -> CLOUD_EVENT_TYPE_PREFIX + v)
-                        .collect(Collectors.toList()));
+
+        log.info("Consumer [{}] — supported schema versions: {}", appName, supportedVersions);
+        log.info("  Dapr CEL routing rules (evaluated on PAYLOAD content):");
+        for (int v : supportedVersions) {
+            log.info("    event.data.schemaVersion == {} → /documents", v);
+        }
+        log.info("    (default) → /documents/unhandled → DROP");
     }
 
     /**
-     * Dapr calls this endpoint to discover subscriptions and routing rules.
+     * Dapr subscription endpoint — returns content-based routing rules.
      *
-     * Returns content-based routing rules using CEL expressions that match
-     * on the CloudEvents "type" attribute.  Only messages whose type matches
-     * a supported version are forwarded to /documents.  Everything else
-     * goes to /documents/unhandled and gets DROPped.
+     * The CEL expressions inspect event.data.schemaVersion (the actual
+     * payload field) to route messages. This is NOT metadata/header
+     * matching — Dapr parses the JSON and reads the field value.
      */
     @GetMapping("/dapr/subscribe")
     public List<Map<String, Object>> subscribe() {
-        // Build a CEL routing rule for each supported version
         List<Map<String, String>> rules = new ArrayList<>();
         for (int v : supportedVersions) {
             rules.add(Map.of(
-                    "match", "event.type == \"" + CLOUD_EVENT_TYPE_PREFIX + v + "\"",
+                    "match", "event.data.schemaVersion == " + v,
                     "path", "/documents"
             ));
         }
@@ -136,11 +133,12 @@ public class SubscriptionController {
     }
 
     /**
-     * Receives documents that MATCHED a routing rule.
+     * Handles messages that MATCHED a routing rule.
      *
-     * By the time a message reaches this handler, the Dapr sidecar has already
-     * verified that the CloudEvents type matches one of our supported versions.
-     * We don't need to filter here — we know the message is for us.
+     * By the time a message reaches here, the Dapr sidecar has already
+     * verified that event.data.schemaVersion matches one of our supported
+     * versions. The service logic is lean — it only handles versions it
+     * was designed for. No defensive filtering needed.
      */
     @PostMapping("/documents")
     @SuppressWarnings("unchecked")
@@ -166,6 +164,8 @@ public class SubscriptionController {
             log.info("[{}] Processing v{} document: id={} title=\"{}\" [processed={}, dropped={}]",
                     appName, schemaVersion, id, title, processedCount, droppedCount);
 
+            // Version-specific business logic — each version can have
+            // fundamentally different processing, including non-additive changes
             processDocument(schemaVersion, data);
             storeDocument(id, data);
 
@@ -178,47 +178,53 @@ public class SubscriptionController {
     }
 
     /**
-     * Receives documents that DID NOT match any routing rule.
+     * Handles messages that DID NOT match any routing rule.
      *
-     * Returning {"status": "DROP"} tells Dapr to acknowledge the message
-     * without redelivery.  This is how unsupported versions are silently
-     * skipped at the sidecar level — the application code above never sees them.
+     * Returning DROP tells Dapr to acknowledge the message without redelivery.
+     * The application code in /documents never sees these messages.
      */
     @PostMapping("/documents/unhandled")
     public ResponseEntity<Map<String, String>> dropUnhandled(@RequestBody Map<String, Object> cloudEvent) {
         droppedCount++;
-        if (droppedCount % 50 == 1) {
-            String type = String.valueOf(cloudEvent.getOrDefault("type", "unknown"));
-            log.debug("[{}] Dropping unhandled message type={} (total dropped: {})", appName, type, droppedCount);
-        }
         return ResponseEntity.ok(Map.of("status", "DROP"));
     }
 
     /**
-     * Version-specific processing logic.
+     * Version-specific processing — each version has different business logic.
+     *
+     * Note how V3 processes tags as weighted objects {name, weight} while V2
+     * processes them as plain strings. This is a NON-ADDITIVE change that
+     * would break if V2 received a V3 document. Dapr routing prevents this.
      */
+    @SuppressWarnings("unchecked")
     private void processDocument(int version, Map<String, Object> data) {
         switch (version) {
             case 1 -> {
-                log.info("  v1 processing: basic document — title=\"{}\"", data.get("title"));
+                log.info("  [v1] basic document — title=\"{}\"", data.get("title"));
             }
             case 2 -> {
-                log.info("  v2 processing: author={}, tags={}",
-                        data.get("author"), data.get("tags"));
+                // V2 tags are plain strings: ["urgent", "batch"]
+                List<String> tags = (List<String>) data.get("tags");
+                log.info("  [v2] author={}, tags={} (plain strings)",
+                        data.get("author"), tags);
             }
             case 3 -> {
-                @SuppressWarnings("unchecked")
+                // V3 tags are weighted objects: [{name:"urgent", weight:0.8}]
+                // This is a NON-ADDITIVE change from V2's string array.
+                List<Map<String, Object>> tags = (List<Map<String, Object>>) data.get("tags");
+                log.info("  [v3] priority={}, tags={} (weighted objects)",
+                        data.get("priority"),
+                        tags.stream()
+                                .map(t -> t.get("name") + ":" + t.get("weight"))
+                                .collect(Collectors.joining(", ")));
                 Map<String, Object> metadata = (Map<String, Object>) data.getOrDefault("metadata", Map.of());
-                log.info("  v3 processing: priority={}, source={}, region={}",
-                        data.get("priority"), metadata.get("source"), metadata.get("region"));
+                log.info("  [v3] source={}, region={}",
+                        metadata.get("source"), metadata.get("region"));
             }
             default -> log.warn("  Unknown schema version: {}", version);
         }
     }
 
-    /**
-     * Persists a processed document to MongoDB through the Dapr state store API.
-     */
     private void storeDocument(String id, Map<String, Object> data) {
         try {
             String stateUrl = String.format("http://localhost:%d/v1.0/state/%s", daprPort, statestoreName);
@@ -236,24 +242,20 @@ public class SubscriptionController {
             headers.setContentType(MediaType.APPLICATION_JSON);
             HttpEntity<String> entity = new HttpEntity<>(mapper.writeValueAsString(stateEntries), headers);
             restTemplate.postForEntity(stateUrl, entity, String.class);
-
-            log.debug("  Stored document {} in state store", id);
         } catch (Exception e) {
             log.warn("  Failed to store document {}: {}", id, e.getMessage());
         }
     }
 
-    /**
-     * Status endpoint showing consumer configuration and stats.
-     */
     @GetMapping("/status")
     public Map<String, Object> status() {
         Map<String, Object> s = new LinkedHashMap<>();
         s.put("appName", appName);
         s.put("supportedVersions", supportedVersions);
         s.put("routingRules", supportedVersions.stream()
-                .map(v -> "event.type == \"" + CLOUD_EVENT_TYPE_PREFIX + v + "\" -> /documents")
+                .map(v -> "event.data.schemaVersion == " + v + " → /documents")
                 .collect(Collectors.toList()));
+        s.put("defaultRoute", "/documents/unhandled → DROP");
         s.put("processedCount", processedCount);
         s.put("droppedCount", droppedCount);
         return s;

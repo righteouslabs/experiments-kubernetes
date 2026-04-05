@@ -16,26 +16,20 @@ import java.util.*;
 
 /**
  * Generates documents with randomly selected schema versions (v1, v2, v3)
- * and publishes them to Kafka via the Dapr pub/sub API.
+ * and publishes them to a SINGLE Kafka topic via the Dapr pub/sub API.
  *
- * Key design points:
+ * The producer's job is simple:
+ *   1. Build a document for a random schema version
+ *   2. Validate it against Schema Registry
+ *   3. Publish it as plain JSON to Dapr
  *
- * 1. Each message is published as a CloudEvents envelope with
- *    type = "com.demo.document.v{N}".  Dapr's content-based routing on the
- *    consumer side uses CEL expressions to match this type and deliver the
- *    message ONLY to consumers that declared support for that version.
+ * The producer does NOT need to know about consumers or routing.
+ * Dapr wraps the payload in CloudEvents and the consumer-side Dapr
+ * sidecars inspect event.data.schemaVersion to route to the right handler.
  *
- * 2. Before publishing, each document is validated against the JSON schema
- *    registered in Schema Registry.  Invalid documents are rejected.
- *
- * 3. All versions flow through a SINGLE Kafka topic ("documents").
- *    No topic-per-version.  Schema Registry tracks which versions are
- *    registered, and the CloudEvents type carries the version discriminator.
- *
- * Schema evolution:
- *   v1 = base fields (id, title, body, createdAt)
- *   v2 = v1 + author, tags
- *   v3 = v2 + priority, metadata (source, region, correlationId)
+ * V3 demonstrates a NON-ADDITIVE change: "tags" becomes an array of
+ * {name, weight} objects instead of plain strings. This would break a
+ * V2 consumer, but Dapr routing ensures V2 consumers never see V3 docs.
  */
 @Component
 public class DocumentGenerator {
@@ -56,15 +50,13 @@ public class DocumentGenerator {
     @Value("${app.dapr.topic}")
     private String topic;
 
-    private static final String CLOUD_EVENT_SOURCE = "document-producer";
-
     private static final String[] TITLES = {
         "Order Created", "User Registered", "Payment Processed",
         "Item Shipped", "Review Submitted", "Inventory Updated",
         "Subscription Renewed", "Alert Triggered"
     };
     private static final String[] AUTHORS = {"alice", "bob", "charlie", "diana", "eve"};
-    private static final String[] TAGS = {"urgent", "normal", "batch", "realtime", "analytics", "audit"};
+    private static final String[] TAGS_PLAIN = {"urgent", "normal", "batch", "realtime", "analytics", "audit"};
     private static final String[] PRIORITIES = {"HIGH", "MEDIUM", "LOW"};
     private static final String[] SOURCES = {"web", "mobile", "api", "batch"};
     private static final String[] REGIONS = {"us-east-1", "us-west-2", "eu-west-1", "ap-south-1"};
@@ -80,39 +72,28 @@ public class DocumentGenerator {
         int version = random.nextInt(3) + 1;
         Map<String, Object> document = buildDocument(version);
 
-        // Validate against registered schema before publishing
+        // Validate against the schema registered in Schema Registry
         if (!schemaRegistrar.validate(version, document)) {
             log.error("[seq={}] Document failed schema validation for v{}, dropping", sequenceNumber, version);
             sequenceNumber++;
             return;
         }
 
-        // Wrap in CloudEvents envelope with version-specific type.
-        // This is the key: Dapr consumers use CEL routing rules to match
-        // on event.type, so only consumers that support this version
-        // will receive the message.
-        String cloudEventType = "com.demo.document.v" + version;
-
-        Map<String, Object> cloudEvent = new LinkedHashMap<>();
-        cloudEvent.put("specversion", "1.0");
-        cloudEvent.put("type", cloudEventType);
-        cloudEvent.put("source", CLOUD_EVENT_SOURCE);
-        cloudEvent.put("id", UUID.randomUUID().toString());
-        cloudEvent.put("datacontenttype", "application/json");
-        cloudEvent.put("data", document);
-
+        // Publish plain JSON — Dapr wraps it in CloudEvents automatically.
+        // The consumer-side Dapr sidecar will inspect event.data.schemaVersion
+        // using CEL routing rules to decide where to route the message.
         String daprUrl = String.format("http://localhost:%d/v1.0/publish/%s/%s", daprPort, pubsubName, topic);
 
         try {
             HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.valueOf("application/cloudevents+json"));
+            headers.setContentType(MediaType.APPLICATION_JSON);
 
-            String payload = mapper.writeValueAsString(cloudEvent);
+            String payload = mapper.writeValueAsString(document);
             HttpEntity<String> entity = new HttpEntity<>(payload, headers);
             restTemplate.postForEntity(daprUrl, entity, String.class);
 
-            log.info("[seq={}] Published v{} document: id={} title=\"{}\" (type={})",
-                    sequenceNumber, version, document.get("id"), document.get("title"), cloudEventType);
+            log.info("[seq={}] Published v{} document: id={} title=\"{}\"",
+                    sequenceNumber, version, document.get("id"), document.get("title"));
         } catch (Exception e) {
             log.warn("[seq={}] Failed to publish: {}", sequenceNumber, e.getMessage());
         }
@@ -130,14 +111,21 @@ public class DocumentGenerator {
         doc.put("body", "Document body #" + sequenceNumber + " - " + Instant.now());
         doc.put("createdAt", Instant.now().toString());
 
-        // v2 fields
-        if (version >= 2) {
+        // v2 fields — tags are plain strings
+        if (version == 2) {
             doc.put("author", pick(AUTHORS));
-            doc.put("tags", List.of(pick(TAGS), pick(TAGS)));
+            doc.put("tags", List.of(pick(TAGS_PLAIN), pick(TAGS_PLAIN)));
         }
 
-        // v3 fields
-        if (version >= 3) {
+        // v3 fields — NON-ADDITIVE CHANGE: tags are now weighted objects,
+        // not plain strings. This would break a V2 consumer that expects
+        // string[]. Dapr routing prevents V2 consumers from seeing V3 docs.
+        if (version == 3) {
+            doc.put("author", pick(AUTHORS));
+            doc.put("tags", List.of(
+                    Map.of("name", pick(TAGS_PLAIN), "weight", Math.round(random.nextDouble() * 100.0) / 100.0),
+                    Map.of("name", pick(TAGS_PLAIN), "weight", Math.round(random.nextDouble() * 100.0) / 100.0)
+            ));
             doc.put("priority", pick(PRIORITIES));
             Map<String, String> metadata = new LinkedHashMap<>();
             metadata.put("source", pick(SOURCES));

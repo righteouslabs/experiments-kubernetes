@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Document V3",
-  "description": "Adds priority levels and structured metadata for operational routing",
+  "description": "NON-ADDITIVE change from V2: 'tags' is now an array of weighted objects instead of plain strings. This would break a V2 consumer. Dapr routing ensures V2 consumers never see V3 documents.",
   "type": "object",
   "required": ["id", "schemaVersion", "title", "body", "author", "tags", "priority", "metadata", "createdAt"],
   "properties": {
@@ -24,8 +24,20 @@
     },
     "tags": {
       "type": "array",
+      "description": "NON-ADDITIVE: changed from string[] (V2) to weighted objects",
       "items": {
-        "type": "string"
+        "type": "object",
+        "required": ["name", "weight"],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "weight": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
       }
     },
     "priority": {
@@ -53,6 +65,5 @@
       "type": "string",
       "format": "date-time"
     }
-  },
-  "additionalProperties": false
+  }
 }

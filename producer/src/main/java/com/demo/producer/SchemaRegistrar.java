@@ -14,31 +14,36 @@ import org.springframework.web.client.RestTemplate;
 import java.util.*;
 
 /**
- * Registers JSON schemas with Confluent Schema Registry on startup and
- * validates outgoing documents against those schemas before publishing.
+ * Registers document schemas with Confluent Schema Registry under a
+ * SINGLE subject ("documents-value") using NONE compatibility mode.
  *
- * All document versions share a SINGLE Kafka topic ("documents").
- * Schema Registry tracks each version as a separate subject
- * ("documents-v1", "documents-v2", etc.) so you get:
- *   - Central schema catalog for discovery
- *   - Compatibility checking when evolving schemas
- *   - Runtime validation at the producer (pre-publish gate)
+ * This is the key design decision:
  *
- * The schemas define which fields are required for each version.
- * Validation here is structural (required-field checks) matching
- * the JSON Schema definitions in schemas/.
+ *   - ONE subject, MULTIPLE schema versions (1, 2, 3, ...) — this is
+ *     how Schema Registry natively tracks schema evolution.
  *
- * To add a V4:
- *   1. Define SCHEMA_V4 with required fields
- *   2. Add to SCHEMAS map
- *   3. Add v4 document building in DocumentGenerator
- *   4. Deploy a consumer with SUPPORTED_VERSIONS=4
- *   That's it — no routing changes needed.
+ *   - Compatibility mode = NONE — we intentionally allow NON-ADDITIVE
+ *     changes between versions. This is safe because Dapr's content-based
+ *     routing ensures each consumer only receives payloads matching the
+ *     schema version(s) it declared support for. A V2 consumer never
+ *     sees a V3 document, so breaking changes between V2→V3 are safe.
+ *
+ *   - Schema Registry serves as the CATALOG and DOCUMENTATION layer,
+ *     not as a compatibility gate. The routing layer (Dapr) provides
+ *     the safety that would normally come from BACKWARD compatibility.
+ *
+ * TO ADD A V4:
+ *   1. Add SCHEMA_V4 definition to the SCHEMAS map below
+ *   2. Add v4 document building in DocumentGenerator
+ *   3. Deploy a consumer with SUPPORTED_VERSIONS=4
+ *   No routing changes, no Kafka changes, no Dapr config changes.
  */
 @Component
 public class SchemaRegistrar {
 
     private static final Logger log = LoggerFactory.getLogger(SchemaRegistrar.class);
+
+    private static final String SUBJECT = "documents-value";
 
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper mapper = new ObjectMapper();
@@ -46,41 +51,42 @@ public class SchemaRegistrar {
     @Value("${app.schema-registry.url:http://schema-registry:8081}")
     private String schemaRegistryUrl;
 
-    // Schema definitions — these match the JSON Schema files in schemas/
-    // Each version defines its required fields for validation.
+    // Schema definitions — registered in order under a single subject.
+    // Each version can contain NON-ADDITIVE changes because Dapr routing
+    // ensures consumers only see versions they support.
 
-    private static final Map<Integer, SchemaDefinition> SCHEMAS = Map.of(
-        1, new SchemaDefinition(
-            "documents-v1",
+    private static final Map<Integer, SchemaDefinition> SCHEMAS = new LinkedHashMap<>();
+    static {
+        SCHEMAS.put(1, new SchemaDefinition(
             List.of("id", "schemaVersion", "title", "body", "createdAt"),
             """
             {
               "$schema": "http://json-schema.org/draft-07/schema#",
-              "title": "Document V1",
+              "title": "Document V1 — Base document",
               "type": "object",
               "required": ["id", "schemaVersion", "title", "body", "createdAt"],
               "properties": {
                 "id": { "type": "string" },
-                "schemaVersion": { "type": "integer", "const": 1 },
+                "schemaVersion": { "type": "integer" },
                 "title": { "type": "string" },
                 "body": { "type": "string" },
                 "createdAt": { "type": "string" }
               }
             }
             """
-        ),
-        2, new SchemaDefinition(
-            "documents-v2",
+        ));
+
+        SCHEMAS.put(2, new SchemaDefinition(
             List.of("id", "schemaVersion", "title", "body", "author", "tags", "createdAt"),
             """
             {
               "$schema": "http://json-schema.org/draft-07/schema#",
-              "title": "Document V2",
+              "title": "Document V2 — Adds author and tags",
               "type": "object",
               "required": ["id", "schemaVersion", "title", "body", "author", "tags", "createdAt"],
               "properties": {
                 "id": { "type": "string" },
-                "schemaVersion": { "type": "integer", "const": 2 },
+                "schemaVersion": { "type": "integer" },
                 "title": { "type": "string" },
                 "body": { "type": "string" },
                 "author": { "type": "string" },
@@ -89,49 +95,65 @@ public class SchemaRegistrar {
               }
             }
             """
-        ),
-        3, new SchemaDefinition(
-            "documents-v3",
+        ));
+
+        SCHEMAS.put(3, new SchemaDefinition(
             List.of("id", "schemaVersion", "title", "body", "author", "tags", "priority", "metadata", "createdAt"),
             """
             {
               "$schema": "http://json-schema.org/draft-07/schema#",
-              "title": "Document V3",
+              "title": "Document V3 — Adds priority and structured metadata (non-additive: tags changed to weighted objects)",
+              "description": "V3 demonstrates a NON-ADDITIVE change: 'tags' is now an array of {name,weight} objects instead of plain strings. A V2 consumer would break on this. Dapr routing ensures V2 consumers never see V3 documents.",
               "type": "object",
               "required": ["id", "schemaVersion", "title", "body", "author", "tags", "priority", "metadata", "createdAt"],
               "properties": {
                 "id": { "type": "string" },
-                "schemaVersion": { "type": "integer", "const": 3 },
+                "schemaVersion": { "type": "integer" },
                 "title": { "type": "string" },
                 "body": { "type": "string" },
                 "author": { "type": "string" },
-                "tags": { "type": "array", "items": { "type": "string" } },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": { "type": "string" },
+                      "weight": { "type": "number" }
+                    }
+                  }
+                },
                 "priority": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
-                "metadata": { "type": "object" },
+                "metadata": {
+                  "type": "object",
+                  "properties": {
+                    "source": { "type": "string" },
+                    "region": { "type": "string" },
+                    "correlationId": { "type": "string" }
+                  }
+                },
                 "createdAt": { "type": "string" }
               }
             }
             """
-        )
-    );
+        ));
+    }
 
     @PostConstruct
     public void registerSchemas() {
-        log.info("Registering {} document schemas with Schema Registry at {}", SCHEMAS.size(), schemaRegistryUrl);
+        log.info("Registering schemas under single subject '{}' at {}", SUBJECT, schemaRegistryUrl);
 
+        // Set compatibility to NONE so non-additive changes are accepted
+        setCompatibility(SUBJECT, "NONE");
+
+        // Register each version in order under the same subject.
+        // Schema Registry assigns version numbers 1, 2, 3, ... automatically.
         for (var entry : SCHEMAS.entrySet()) {
             int version = entry.getKey();
             SchemaDefinition def = entry.getValue();
-
-            // Register under per-version subject (used by this demo for routing)
-            registerSchema(def.subject(), version, def);
-
-            // Also register under the standard TopicNameStrategy subject
-            // (documents-value) so Schema Registry tracks the evolution lineage.
-            // In production with Avro, this single subject + BACKWARD compat
-            // is the canonical Confluent pattern.
-            registerSchema("documents-value", version, def);
+            registerSchema(SUBJECT, version, def);
         }
+
+        log.info("All schemas registered. View at: {}/subjects/{}/versions", schemaRegistryUrl, SUBJECT);
     }
 
     /**
@@ -141,7 +163,7 @@ public class SchemaRegistrar {
     public boolean validate(int version, Map<String, Object> document) {
         SchemaDefinition def = SCHEMAS.get(version);
         if (def == null) {
-            log.error("No schema registered for version {}", version);
+            log.error("No schema definition for version {}", version);
             return false;
         }
 
@@ -155,16 +177,28 @@ public class SchemaRegistrar {
         return true;
     }
 
-    /** Returns the set of registered schema versions. */
-    public Set<Integer> registeredVersions() {
+    /** Returns the set of defined schema versions. */
+    public Set<Integer> definedVersions() {
         return SCHEMAS.keySet();
+    }
+
+    private void setCompatibility(String subject, String level) {
+        String url = schemaRegistryUrl + "/config/" + subject;
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.valueOf("application/vnd.schemaregistry.v1+json"));
+            String body = "{\"compatibility\":\"" + level + "\"}";
+            restTemplate.put(url, new HttpEntity<>(body, headers));
+            log.info("  Set compatibility for '{}' to {}", subject, level);
+        } catch (Exception e) {
+            log.warn("  Could not set compatibility: {}", e.getMessage());
+        }
     }
 
     private void registerSchema(String subject, int version, SchemaDefinition def) {
         String url = schemaRegistryUrl + "/subjects/" + subject + "/versions";
 
         try {
-            // Wrap the schema JSON for Schema Registry's expected format
             String escaped = def.schemaJson().replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
             String body = "{\"schemaType\":\"JSON\",\"schema\":\"" + escaped + "\"}";
 
@@ -174,13 +208,11 @@ public class SchemaRegistrar {
             HttpEntity<String> entity = new HttpEntity<>(body, headers);
             restTemplate.postForEntity(url, entity, String.class);
 
-            log.info("  Registered schema: subject={} (v{}, {} required fields)",
-                    subject, version, def.requiredFields().size());
+            log.info("  Registered {}/v{}: {} required fields", subject, version, def.requiredFields().size());
         } catch (Exception e) {
-            log.warn("  Failed to register {}/v{}: {} (Schema Registry may not be ready yet)",
-                    subject, version, e.getMessage());
+            log.warn("  Failed to register {}/v{}: {}", subject, version, e.getMessage());
         }
     }
 
-    private record SchemaDefinition(String subject, List<String> requiredFields, String schemaJson) {}
+    private record SchemaDefinition(List<String> requiredFields, String schemaJson) {}
 }
