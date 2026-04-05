@@ -122,7 +122,15 @@ public class SchemaRegistrar {
         for (var entry : SCHEMAS.entrySet()) {
             int version = entry.getKey();
             SchemaDefinition def = entry.getValue();
-            registerSchema(version, def);
+
+            // Register under per-version subject (used by this demo for routing)
+            registerSchema(def.subject(), version, def);
+
+            // Also register under the standard TopicNameStrategy subject
+            // (documents-value) so Schema Registry tracks the evolution lineage.
+            // In production with Avro, this single subject + BACKWARD compat
+            // is the canonical Confluent pattern.
+            registerSchema("documents-value", version, def);
         }
     }
 
@@ -152,8 +160,8 @@ public class SchemaRegistrar {
         return SCHEMAS.keySet();
     }
 
-    private void registerSchema(int version, SchemaDefinition def) {
-        String url = schemaRegistryUrl + "/subjects/" + def.subject() + "/versions";
+    private void registerSchema(String subject, int version, SchemaDefinition def) {
+        String url = schemaRegistryUrl + "/subjects/" + subject + "/versions";
 
         try {
             // Wrap the schema JSON for Schema Registry's expected format
@@ -167,9 +175,10 @@ public class SchemaRegistrar {
             restTemplate.postForEntity(url, entity, String.class);
 
             log.info("  Registered schema: subject={} (v{}, {} required fields)",
-                    def.subject(), version, def.requiredFields().size());
+                    subject, version, def.requiredFields().size());
         } catch (Exception e) {
-            log.warn("  Failed to register schema v{}: {} (Schema Registry may not be ready yet)", version, e.getMessage());
+            log.warn("  Failed to register {}/v{}: {} (Schema Registry may not be ready yet)",
+                    subject, version, e.getMessage());
         }
     }
 

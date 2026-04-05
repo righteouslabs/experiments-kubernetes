@@ -566,6 +566,90 @@ the Knative Service definitions with traffic splitting examples.
 
 ---
 
+## Design Decisions & Trade-offs
+
+### Schema Registry: How We Use It vs. The Confluent Standard
+
+Confluent Schema Registry natively supports versioning through a
+**single subject with ordered versions** and compatibility rules:
+
+```mermaid
+graph LR
+    subgraph "Confluent Standard (TopicNameStrategy)"
+        S["Subject: documents-value"]
+        S --> V1["Version 1<br/>{id, title, body}"]
+        V1 --> V2["Version 2<br/>{id, title, body, author, tags}<br/>BACKWARD compatible"]
+        V2 --> V3["Version 3<br/>{id, title, body, author, tags, priority, metadata}<br/>BACKWARD compatible"]
+    end
+
+    subgraph "Our Approach"
+        S1["Subject: documents-v1"]
+        S2["Subject: documents-v2"]
+        S3["Subject: documents-v3"]
+    end
+
+    style S fill:#4a9eff,color:#fff
+    style S1 fill:#f59e0b,color:#000
+    style S2 fill:#f59e0b,color:#000
+    style S3 fill:#f59e0b,color:#000
+```
+
+| Aspect | Confluent standard | This demo |
+|--------|-------------------|-----------|
+| **Subject strategy** | Single subject (`documents-value`), ordered versions | Separate subject per version (`documents-v1`, `-v2`, `-v3`) |
+| **Serialization** | Avro with schema ID in wire format (magic byte + 4-byte ID) | JSON with `schemaVersion` in payload, CloudEvents type for routing |
+| **Compatibility** | Enforced by registry (BACKWARD/FORWARD/FULL rules) | Not enforced between versions (independent subjects) |
+| **Consumer evolution** | Avro reader/writer schema negotiation handles old+new transparently | Consumers explicitly declare supported versions via config |
+| **Routing** | Not needed &mdash; all consumers read all versions via schema evolution | Dapr CEL routing based on CloudEvents type |
+
+### Why We Made This Choice
+
+The Confluent Avro pattern solves **transparent schema evolution** &mdash;
+consumers auto-adapt to new fields without code changes. It's the right
+pattern when the business logic is the same across versions.
+
+This demo solves a **different problem**: versions with **fundamentally
+different processing logic** (v1 = basic logging, v2 = author attribution,
+v3 = priority routing). Each version triggers different business behavior
+that can't be handled by Avro schema negotiation alone.
+
+```mermaid
+graph TB
+    subgraph "When to use Confluent Avro pattern"
+        CA1["All consumers do the same thing"]
+        CA2["New fields are optional/additive"]
+        CA3["No version-specific business logic"]
+        CA1 --> USE_AVRO["Use single subject + Avro<br/>Schema evolution is transparent"]
+    end
+
+    subgraph "When to use version-aware routing"
+        VR1["Different versions need different processing"]
+        VR2["Version-specific consumers with distinct logic"]
+        VR3["Gradual rollout of new processing capabilities"]
+        VR1 --> USE_ROUTING["Use CloudEvents type + Dapr routing<br/>+ Schema Registry as catalog"]
+    end
+
+    style USE_AVRO fill:#2ea44f,color:#fff
+    style USE_ROUTING fill:#4a9eff,color:#fff
+```
+
+### Production Recommendations
+
+For a production system, consider combining both patterns:
+
+1. **Schema Registry** with a single subject and BACKWARD compatibility
+   for schema governance and documentation
+2. **Avro serialization** with the Confluent wire format for efficient
+   encoding and automatic deserialization
+3. **Dapr CloudEvents routing** for version-specific business logic routing
+4. **Schema ID in headers** instead of `schemaVersion` in the payload
+
+This demo intentionally uses JSON (not Avro) to keep the code readable
+and the dependency footprint small. The routing pattern (CloudEvents type
++ Dapr CEL rules) is the same regardless of serialization format.
+
+---
+
 ## OpenShift / MicroShift Notes
 
 Running on MicroShift (OpenShift-based) requires a few accommodations that
