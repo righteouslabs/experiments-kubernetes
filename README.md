@@ -240,6 +240,103 @@ graph LR
 
 The JSON schemas live in [`schemas/`](schemas/).
 
+### How Smart Routing Works
+
+This is the core mechanism — **not** topic-per-version, **not** naive
+application-level filtering. All versions flow through a **single Kafka topic**
+with routing handled by Dapr's CloudEvents-based content routing:
+
+```mermaid
+sequenceDiagram
+    participant P as Producer
+    participant SR as Schema Registry
+    participant D1 as Dapr Sidecar<br/>(producer)
+    participant K as Kafka<br/>(documents topic)
+    participant D2 as Dapr Sidecar<br/>(consumer-v2)
+    participant C as Consumer App<br/>(SUPPORTED_VERSIONS=2)
+
+    Note over P,SR: Startup
+    P->>SR: Register schemas v1, v2, v3
+
+    Note over P,C: Publishing a v2 document
+    P->>P: Validate document against v2 schema
+    P->>D1: POST /publish (CloudEvents)<br/>type="com.demo.document.v2"
+    D1->>K: Produce to "documents" topic<br/>(single topic, all versions)
+
+    Note over K,C: Consumer receives message
+    K->>D2: Deliver message to consumer-v2 group
+    D2->>D2: Evaluate CEL routing rules:<br/>event.type == "com.demo.document.v1"? NO<br/>event.type == "com.demo.document.v2"? YES
+    D2->>C: Forward to /documents
+    C->>C: Process v2 document<br/>(author, tags)
+
+    Note over K,C: When consumer-v2 gets a v3 message
+    K->>D2: Deliver v3 message
+    D2->>D2: Evaluate CEL rules:<br/>event.type == "com.demo.document.v3"?<br/>No match → default route
+    D2->>C: Forward to /documents/unhandled
+    C-->>D2: {"status": "DROP"}<br/>(acknowledged, not processed)
+```
+
+**Step by step:**
+
+| Step | What | Where |
+|------|-------|-------|
+| 1 | Producer validates doc against JSON schema | `SchemaRegistrar.validate()` |
+| 2 | Producer publishes CloudEvents with `type: com.demo.document.v{N}` | `DocumentGenerator.generate()` |
+| 3 | All versions go to **single** Kafka topic `documents` | Dapr pub/sub component |
+| 4 | Each consumer's Dapr sidecar evaluates **CEL routing rules** | `/dapr/subscribe` response |
+| 5 | Matching messages → `/documents` (processed) | Dapr sidecar routing |
+| 6 | Non-matching messages → `/documents/unhandled` → `DROP` | Dapr sidecar routing |
+
+**The routing rules are auto-generated from config**, not hardcoded:
+
+```java
+// Consumer generates routing rules from SUPPORTED_VERSIONS env var
+for (int v : supportedVersions) {
+    rules.add(Map.of(
+        "match", "event.type == \"com.demo.document.v" + v + "\"",
+        "path", "/documents"
+    ));
+}
+```
+
+A consumer with `SUPPORTED_VERSIONS=1,2` generates rules for both v1 and v2,
+making it a **backward-compatible multi-version consumer**.
+
+### Adding a V4 Schema
+
+To add a new schema version, you touch exactly **two things**:
+
+```mermaid
+graph LR
+    subgraph "1. Producer (add schema + doc builder)"
+        A1["Add SCHEMA_V4 to<br/>SchemaRegistrar.java"]
+        A2["Add v4 fields in<br/>DocumentGenerator.java"]
+    end
+
+    subgraph "2. Deploy a consumer"
+        B1["Deploy consumer-v4<br/>SUPPORTED_VERSIONS=4"]
+    end
+
+    subgraph "No changes needed"
+        C1["Kafka topic ✓"]
+        C2["Dapr components ✓"]
+        C3["Routing logic ✓"]
+        C4["Existing consumers ✓"]
+    end
+
+    A1 --> A2 --> B1
+
+    style C1 fill:#d1fae5,stroke:#10b981
+    style C2 fill:#d1fae5,stroke:#10b981
+    style C3 fill:#d1fae5,stroke:#10b981
+    style C4 fill:#d1fae5,stroke:#10b981
+```
+
+- **No new Kafka topics** — v4 flows through the same `documents` topic
+- **No Dapr config changes** — routing rules auto-generate from `SUPPORTED_VERSIONS`
+- **No existing consumer changes** — they keep processing their versions, v4 messages get DROPped
+- **Schema Registry** — v4 schema auto-registered on producer startup
+
 ---
 
 ## Quick Start
@@ -387,54 +484,61 @@ docker compose down -v
 
 ```mermaid
 graph TB
-    A["One Docker Image"] --> B["consumer-v1<br/>SUPPORTED_VERSIONS=1"]
+    A["One Docker Image<br/>document-consumer:latest"] --> B["consumer-v1<br/>SUPPORTED_VERSIONS=1"]
     A --> C["consumer-v2<br/>SUPPORTED_VERSIONS=2"]
     A --> D["consumer-v3<br/>SUPPORTED_VERSIONS=3"]
+    A --> BC["consumer-compat<br/>SUPPORTED_VERSIONS=1,2"]
 
-    B --> E{"schemaVersion == 1?"}
-    C --> F{"schemaVersion == 2?"}
-    D --> G{"schemaVersion == 3?"}
+    B --> |"Dapr CEL rule:<br/>type == com.demo.document.v1"| E["/documents handler"]
+    C --> |"Dapr CEL rule:<br/>type == com.demo.document.v2"| E
+    D --> |"Dapr CEL rule:<br/>type == com.demo.document.v3"| E
+    BC --> |"Two Dapr CEL rules:<br/>type == ...v1 OR ...v2"| E
 
-    E -- Yes --> H["Process + store"]
-    E -- No --> I["Acknowledge + skip"]
-    F -- Yes --> H
-    F -- No --> I
-    G -- Yes --> H
-    G -- No --> I
+    E --> F["Process + store<br/>in MongoDB"]
+    B --> |"All other types"| G["/documents/unhandled<br/>→ DROP"]
+    C --> |"All other types"| G
+    D --> |"All other types"| G
 
     style A fill:#6366f1,color:#fff
     style B fill:#2ea44f,color:#fff
     style C fill:#2ea44f,color:#fff
     style D fill:#2ea44f,color:#fff
-    style H fill:#22c55e,color:#fff
-    style I fill:#94a3b8,color:#fff
+    style BC fill:#f59e0b,color:#000
+    style F fill:#22c55e,color:#fff
+    style G fill:#94a3b8,color:#fff
 ```
 
 The core pattern:
 
 1. **One Docker image, many configurations** &mdash; The consumer service is
    built once. Each instance receives a `SUPPORTED_VERSIONS` env var that
-   controls which schema versions it processes.
+   controls which schema versions its Dapr routing rules accept.
 
-2. **Dapr pub/sub decouples producers from consumers** &mdash; The producer
-   publishes to a topic without knowing (or caring) which consumers exist.
-   Dapr delivers messages to all subscribers.
+2. **CloudEvents type as version discriminator** &mdash; The producer sets
+   `type: com.demo.document.v{N}` on every message. This is the field that
+   drives all routing decisions.
 
-3. **Each consumer instance has its own Kafka consumer group** &mdash; Because
-   each has a unique Dapr `app-id`, Kafka treats them as independent
-   subscribers. Every message is delivered to every consumer.
+3. **Dapr CEL routing rules** &mdash; Each consumer's `/dapr/subscribe`
+   endpoint returns CEL match expressions auto-generated from `SUPPORTED_VERSIONS`.
+   The Dapr sidecar evaluates these rules and only forwards matching messages
+   to the application. Non-matching messages are DROPped at the sidecar level.
 
-4. **Schema-aware filtering** &mdash; Each consumer checks
-   `document.schemaVersion` against its supported set. Matching documents are
-   processed and stored; non-matching ones are acknowledged and skipped.
+4. **Single Kafka topic** &mdash; All versions coexist on the `documents` topic.
+   No topic-per-version. Schema Registry tracks each version as a subject
+   for compatibility enforcement.
 
-5. **Knative manages service lifecycle** &mdash; In the Kubernetes deployment,
+5. **Schema Registry enforcement** &mdash; The producer validates each document
+   against its registered schema before publishing. Invalid documents are
+   rejected before reaching Kafka.
+
+6. **Knative manages service lifecycle** &mdash; In the Kubernetes deployment,
    Knative handles revision tracking, auto-scaling (including scale-to-zero),
    and traffic splitting between revisions for gradual rollouts.
 
 This approach lets you:
 - Deploy a new consumer version without touching existing ones
-- Run multiple consumer versions simultaneously during migration
+- Run multi-version consumers (`SUPPORTED_VERSIONS=1,2`) for backward compatibility
+- Add a V4 by only adding the schema and deploying a consumer (no routing changes)
 - Use Knative traffic splitting for canary deployments
 - Decommission old versions by simply removing the deployment
 

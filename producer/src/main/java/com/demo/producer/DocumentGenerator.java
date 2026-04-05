@@ -18,6 +18,20 @@ import java.util.*;
  * Generates documents with randomly selected schema versions (v1, v2, v3)
  * and publishes them to Kafka via the Dapr pub/sub API.
  *
+ * Key design points:
+ *
+ * 1. Each message is published as a CloudEvents envelope with
+ *    type = "com.demo.document.v{N}".  Dapr's content-based routing on the
+ *    consumer side uses CEL expressions to match this type and deliver the
+ *    message ONLY to consumers that declared support for that version.
+ *
+ * 2. Before publishing, each document is validated against the JSON schema
+ *    registered in Schema Registry.  Invalid documents are rejected.
+ *
+ * 3. All versions flow through a SINGLE Kafka topic ("documents").
+ *    No topic-per-version.  Schema Registry tracks which versions are
+ *    registered, and the CloudEvents type carries the version discriminator.
+ *
  * Schema evolution:
  *   v1 = base fields (id, title, body, createdAt)
  *   v2 = v1 + author, tags
@@ -31,6 +45,7 @@ public class DocumentGenerator {
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper mapper = new ObjectMapper();
     private final Random random = new Random();
+    private final SchemaRegistrar schemaRegistrar;
 
     @Value("${app.dapr.http-port}")
     private int daprPort;
@@ -40,6 +55,8 @@ public class DocumentGenerator {
 
     @Value("${app.dapr.topic}")
     private String topic;
+
+    private static final String CLOUD_EVENT_SOURCE = "document-producer";
 
     private static final String[] TITLES = {
         "Order Created", "User Registered", "Payment Processed",
@@ -54,24 +71,48 @@ public class DocumentGenerator {
 
     private long sequenceNumber = 0;
 
+    public DocumentGenerator(SchemaRegistrar schemaRegistrar) {
+        this.schemaRegistrar = schemaRegistrar;
+    }
+
     @Scheduled(fixedRateString = "${app.producer.interval-ms}")
     public void generate() {
         int version = random.nextInt(3) + 1;
         Map<String, Object> document = buildDocument(version);
 
+        // Validate against registered schema before publishing
+        if (!schemaRegistrar.validate(version, document)) {
+            log.error("[seq={}] Document failed schema validation for v{}, dropping", sequenceNumber, version);
+            sequenceNumber++;
+            return;
+        }
+
+        // Wrap in CloudEvents envelope with version-specific type.
+        // This is the key: Dapr consumers use CEL routing rules to match
+        // on event.type, so only consumers that support this version
+        // will receive the message.
+        String cloudEventType = "com.demo.document.v" + version;
+
+        Map<String, Object> cloudEvent = new LinkedHashMap<>();
+        cloudEvent.put("specversion", "1.0");
+        cloudEvent.put("type", cloudEventType);
+        cloudEvent.put("source", CLOUD_EVENT_SOURCE);
+        cloudEvent.put("id", UUID.randomUUID().toString());
+        cloudEvent.put("datacontenttype", "application/json");
+        cloudEvent.put("data", document);
+
         String daprUrl = String.format("http://localhost:%d/v1.0/publish/%s/%s", daprPort, pubsubName, topic);
 
         try {
             HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.set("metadata.rawPayload", "true");
+            headers.setContentType(MediaType.valueOf("application/cloudevents+json"));
 
-            String payload = mapper.writeValueAsString(document);
+            String payload = mapper.writeValueAsString(cloudEvent);
             HttpEntity<String> entity = new HttpEntity<>(payload, headers);
             restTemplate.postForEntity(daprUrl, entity, String.class);
 
-            log.info("[seq={}] Published v{} document: id={} title=\"{}\"",
-                    sequenceNumber, version, document.get("id"), document.get("title"));
+            log.info("[seq={}] Published v{} document: id={} title=\"{}\" (type={})",
+                    sequenceNumber, version, document.get("id"), document.get("title"), cloudEventType);
         } catch (Exception e) {
             log.warn("[seq={}] Failed to publish: {}", sequenceNumber, e.getMessage());
         }
