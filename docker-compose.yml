@@ -118,6 +118,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./producer:/workspace/producer:ro
       - ./consumer-service:/workspace/consumer-service:ro
+      - ./dashboard:/workspace/dashboard:ro
     entrypoint: /bin/sh
     command:
       - -c
@@ -137,6 +138,10 @@ services:
         docker build -t document-consumer:latest /workspace/consumer-service
 
         echo ""
+        echo "--- Building dashboard ---"
+        docker build -t demo-dashboard:latest /workspace/dashboard
+
+        echo ""
         echo "--- Pre-pulling infrastructure images ---"
         docker pull confluentinc/cp-zookeeper:7.5.0
         docker pull confluentinc/cp-kafka:7.5.0
@@ -144,25 +149,28 @@ services:
         docker pull mongo:7.0
         docker pull daprio/placement:1.12.4
         docker pull daprio/daprd:1.12.4
+        docker pull provectuslabs/kafka-ui:latest
 
         echo ""
         echo "--- Loading ALL images into MicroShift (podman -> CRI-O) ---"
         for img in \
             document-producer:latest \
             document-consumer:latest \
+            demo-dashboard:latest \
             confluentinc/cp-zookeeper:7.5.0 \
             confluentinc/cp-kafka:7.5.0 \
             confluentinc/cp-schema-registry:7.5.0 \
             mongo:7.0 \
             daprio/placement:1.12.4 \
-            daprio/daprd:1.12.4; do
+            daprio/daprd:1.12.4 \
+            provectuslabs/kafka-ui:latest; do
           echo "  Loading $$img..."
           docker save "$$img" | docker exec -i microshift podman load
         done
 
         echo ""
         echo "--- Verifying images in MicroShift ---"
-        docker exec microshift crictl images | grep -E "document|confluent|mongo|dapr"
+        docker exec microshift crictl images | grep -E "document|confluent|mongo|dapr|kafka-ui"
 
         echo ""
         echo "Phase 1 complete."
@@ -261,13 +269,19 @@ services:
         kubectl apply -f /k8s/services/consumer-v2.yaml
         kubectl apply -f /k8s/services/consumer-v3.yaml
 
+        # --- Dashboard ---
+        echo ""
+        echo "[6/7] Deploying dashboard..."
+        kubectl apply -f /k8s/services/dashboard.yaml
+
         # --- Wait for everything ---
         echo ""
-        echo "[6/6] Waiting for all services to be ready..."
+        echo "[7/7] Waiting for all services to be ready..."
         kubectl -n versioned-demo wait --for=condition=available deployment/producer     --timeout=300s
         kubectl -n versioned-demo wait --for=condition=available deployment/consumer-v1  --timeout=300s
         kubectl -n versioned-demo wait --for=condition=available deployment/consumer-v2  --timeout=300s
         kubectl -n versioned-demo wait --for=condition=available deployment/consumer-v3  --timeout=300s
+        kubectl -n versioned-demo wait --for=condition=available deployment/dashboard    --timeout=300s
 
         echo ""
         echo "============================================"

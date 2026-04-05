@@ -76,6 +76,21 @@ services:
       timeout: 5s
       retries: 5
 
+  # ======================== Kafka UI (Visualizer) ========================
+
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "5001:5001"
+    environment:
+      CONSUMER_V1_URL: http://consumer-v1:8080
+      CONSUMER_V2_URL: http://consumer-v2:8080
+      CONSUMER_V3_URL: http://consumer-v3:8080
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+    depends_on:
+      kafka:
+        condition: service_healthy
+
   # ======================== Dapr ========================
 
   dapr-placement:
