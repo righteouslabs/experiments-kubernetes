@@ -13,11 +13,7 @@ import httpx
 
 # -- Config (service URLs resolved via K8s DNS or Docker networking) --
 
-CONSUMER_ENDPOINTS = {
-    "consumer-v1": os.environ.get("CONSUMER_V1_URL", "http://consumer-v1:8080"),
-    "consumer-v2": os.environ.get("CONSUMER_V2_URL", "http://consumer-v2:8080"),
-    "consumer-v3": os.environ.get("CONSUMER_V3_URL", "http://consumer-v3:8080"),
-}
+CONSUMER_URL = os.environ.get("CONSUMER_URL", "http://consumer:8080")
 SCHEMA_REGISTRY_URL = os.environ.get("SCHEMA_REGISTRY_URL", "http://schema-registry:8081")
 
 client = httpx.Client(timeout=3.0)
@@ -36,14 +32,13 @@ app, rt = fast_app(
             .card h3 { margin-top: 0; }
             .stat { font-size: 2rem; font-weight: bold; }
             .stat-label { font-size: 0.85rem; color: var(--pico-muted-color); }
-            .v1 { border-left: 4px solid #3b82f6; }
-            .v2 { border-left: 4px solid #10b981; }
-            .v3 { border-left: 4px solid #f59e0b; }
-            .rule { font-family: monospace; font-size: 0.85rem; background: var(--pico-code-background-color); padding: 2px 6px; border-radius: 4px; }
+            .consumer-card { border-left: 4px solid #3b82f6; }
+            .rule { font-family: monospace; font-size: 0.85rem; background: var(--pico-code-background-color); padding: 2px 6px; border-radius: 4px; display: block; margin: 2px 0; }
             .schema-card { border-left: 4px solid #8b5cf6; }
             .tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.8rem; margin: 2px; }
             .tag-processed { background: #d1fae5; color: #065f46; }
             .tag-dropped { background: #fee2e2; color: #991b1b; }
+            .tag-version { background: #dbeafe; color: #1e40af; }
             .refresh-note { font-size: 0.8rem; color: var(--pico-muted-color); text-align: right; }
             .error { color: var(--pico-del-color); font-size: 0.85rem; }
             table { font-size: 0.9rem; }
@@ -52,12 +47,12 @@ app, rt = fast_app(
 )
 
 
-def fetch_consumer_status(name: str, url: str) -> dict:
+def fetch_consumer_status() -> dict:
     try:
-        r = client.get(f"{url}/status")
+        r = client.get(f"{CONSUMER_URL}/status")
         return r.json()
     except Exception as e:
-        return {"appName": name, "error": str(e), "supportedVersions": [], "processedCount": 0, "droppedCount": 0}
+        return {"appName": "consumer", "error": str(e), "supportedVersions": [], "processedCount": 0, "droppedCount": 0}
 
 
 def fetch_schema_registry() -> dict:
@@ -72,8 +67,8 @@ def fetch_schema_registry() -> dict:
         return {"error": str(e)}
 
 
-def consumer_card(status: dict, css_class: str):
-    name = status.get("appName", "unknown")
+def consumer_card(status: dict):
+    name = status.get("appName", "consumer")
     versions = status.get("supportedVersions", [])
     rules = status.get("routingRules", [])
     processed = status.get("processedCount", 0)
@@ -81,30 +76,32 @@ def consumer_card(status: dict, css_class: str):
     total = processed + dropped
     error = status.get("error")
 
-    pct = f"{(processed / total * 100):.0f}%" if total > 0 else "—"
+    pct = f"{(processed / total * 100):.0f}%" if total > 0 else "---"
 
     return Div(
-        H3(name),
+        H3(f"{name} (multi-version)"),
         P(
             Span(str(processed), cls="stat"),
             Span(" processed", cls="stat-label"),
             Br(),
             Span(f"{pct} hit rate", cls="stat-label"),
-            Span(" · ", cls="stat-label"),
+            Span(" | ", cls="stat-label"),
             Span(f"{dropped} dropped", cls="stat-label"),
         ) if not error else P(Span(f"Error: {error}", cls="error")),
         P(
-            Strong("Supported: "), ", ".join(f"v{v}" for v in versions),
+            Strong("Supported versions: "),
+            *[Span(f"v{v}", cls="tag tag-version") for v in versions],
+        ),
+        P(
+            Strong("Dapr routing rules:"),
             Br(),
-            Strong("Dapr routing: "),
-            Br(),
-            *[Span(r, cls="rule") for r in rules[:3]],
+            *[Span(r, cls="rule") for r in rules],
         ) if rules else "",
         Div(
             Span(f"processed: {processed}", cls="tag tag-processed"),
             Span(f"dropped: {dropped}", cls="tag tag-dropped"),
         ),
-        cls=f"card {css_class}",
+        cls="card consumer-card",
     )
 
 
@@ -135,8 +132,9 @@ def get():
     return Title("Pipeline Dashboard"), Main(
         H1("Versioned Microservice Pipeline"),
         P(
-            "Real-time view of the Kafka → Dapr → versioned consumers pipeline. ",
+            "Real-time view of the Kafka -> Dapr -> consumer pipeline. ",
             "All versions flow through a ", Strong("single Kafka topic"), ". ",
+            "A ", Strong("single consumer"), " handles all schema versions. ",
             "Dapr routes based on ", Code("event.data.schemaVersion"), " in the payload.",
         ),
         Div(id="live", hx_get="/live", hx_trigger="load, every 3s", hx_swap="innerHTML"),
@@ -145,11 +143,11 @@ def get():
 
 @rt("/live")
 def get():
-    statuses = {name: fetch_consumer_status(name, url) for name, url in CONSUMER_ENDPOINTS.items()}
+    status = fetch_consumer_status()
     registry = fetch_schema_registry()
 
-    total_processed = sum(s.get("processedCount", 0) for s in statuses.values())
-    total_dropped = sum(s.get("droppedCount", 0) for s in statuses.values())
+    total_processed = status.get("processedCount", 0)
+    total_dropped = status.get("droppedCount", 0)
     total_messages = total_processed + total_dropped
 
     return Div(
@@ -159,20 +157,15 @@ def get():
                 Span(str(total_messages), cls="stat"),
                 Span(" total messages seen", cls="stat-label"),
                 Br(),
-                Span(f"{total_processed} processed · {total_dropped} dropped", cls="stat-label"),
+                Span(f"{total_processed} processed | {total_dropped} dropped", cls="stat-label"),
                 cls="card",
             ),
             schema_section(registry),
             style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;",
         ),
-        # Consumer cards
-        H2("Consumer Handlers (running concurrently)"),
-        Div(
-            consumer_card(statuses.get("consumer-v1", {}), "v1"),
-            consumer_card(statuses.get("consumer-v2", {}), "v2"),
-            consumer_card(statuses.get("consumer-v3", {}), "v3"),
-            cls="grid-3",
-        ),
+        # Consumer card
+        H2("Consumer (handles all schema versions)"),
+        consumer_card(status),
         P(f"Last refreshed: {datetime.now().strftime('%H:%M:%S')}", cls="refresh-note"),
     )
 

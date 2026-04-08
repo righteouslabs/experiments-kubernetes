@@ -1,22 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: consumer-v3
+  name: consumer
   namespace: versioned-demo
   labels:
     app: consumer
-    version: v3
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: consumer
-      version: v3
   template:
     metadata:
       labels:
         app: consumer
-        version: v3
     spec:
       enableServiceLinks: false
       containers:
@@ -29,9 +26,9 @@ spec:
             - name: DAPR_HTTP_PORT
               value: "3500"
             - name: SUPPORTED_VERSIONS
-              value: "3"
+              value: "1,2,3"
             - name: SPRING_APPLICATION_NAME
-              value: "consumer-v3"
+              value: "consumer"
           resources:
             requests:
               memory: "192Mi"
@@ -45,7 +42,7 @@ spec:
           command:
             - "./daprd"
             - "-app-id"
-            - "consumer-v3"
+            - "consumer"
             - "-app-port"
             - "8080"
             - "-placement-host-address"

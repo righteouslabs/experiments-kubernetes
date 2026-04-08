@@ -4,8 +4,11 @@ Run **multiple versioned microservices** that handle evolving document schemas
 on a **single Kafka topic** — with **Dapr** doing content-based routing and
 **Schema Registry** tracking schema evolution (including non-additive changes).
 
+A **single consumer deployment** handles all schema versions, and **Knative**
+provides revision management and traffic splitting for safe rollouts.
+
 > **TL;DR** &mdash; `docker compose up --detach` and open the live dashboard
-> to watch versioned consumers process documents in real time.
+> to watch the unified consumer process documents in real time.
 
 ---
 
@@ -23,40 +26,50 @@ graph LR
         SV["documents-value<br/>v1 · v2 · v3"]
     end
 
-    subgraph "Concurrent Consumers (same image, different config)"
-        C1["consumer-v1<br/>SUPPORTED_VERSIONS=1"]
-        C2["consumer-v2<br/>SUPPORTED_VERSIONS=2"]
-        C3["consumer-v3<br/>SUPPORTED_VERSIONS=3"]
-    end
+    C["consumer<br/>SUPPORTED_VERSIONS=1,2,3"]
 
     M[(MongoDB)]
     D["Dashboard<br/>(FastHTML)"]
 
     P -- "validate → publish" --> T
     P -. "register schemas" .-> SR
-    T -- "Dapr routes where<br/>event.data.schemaVersion == 1" --> C1
-    T -- "Dapr routes where<br/>event.data.schemaVersion == 2" --> C2
-    T -- "Dapr routes where<br/>event.data.schemaVersion == 3" --> C3
-    C1 --> M
-    C2 --> M
-    C3 --> M
-    C1 -.- D
-    C2 -.- D
-    C3 -.- D
+    T -- "Dapr routes where<br/>event.data.schemaVersion ∈ {1,2,3}" --> C
+    C --> M
+    C -.- D
 
     style T fill:#e04e39,color:#fff
     style SR fill:#8b5cf6,color:#fff
-    style C1 fill:#3b82f6,color:#fff
-    style C2 fill:#10b981,color:#fff
-    style C3 fill:#f59e0b,color:#fff
+    style C fill:#3b82f6,color:#fff
     style M fill:#589636,color:#fff
 ```
 
 **Key points:**
 - **One Kafka topic** for all schema versions — no topic-per-version
-- **Dapr inspects the payload** (`event.data.schemaVersion`) and routes to the right consumer
-- **Non-additive changes are safe** — V3 changes `tags` from `string[]` to `{name, weight}[]` objects. V2 consumers never see V3 documents.
+- **One consumer** handles all versions via `SUPPORTED_VERSIONS=1,2,3`
+- **Dapr inspects the payload** (`event.data.schemaVersion`) and routes matching versions to `/documents`, everything else to `/documents/unhandled`
+- **Non-additive changes are safe** — V3 changes `tags` from `string[]` to `{name, weight}[]` objects. The consumer generates CEL rules for each supported version.
 - **Schema Registry** uses a single subject with NONE compatibility — tracks evolution, doesn't block it
+
+---
+
+## How Versioned Services Work (Multi-Version Pattern)
+
+Instead of deploying one consumer per schema version, a **single consumer** declares all versions it supports:
+
+```
+SUPPORTED_VERSIONS=1,2,3
+```
+
+At startup the consumer auto-generates Dapr CEL routing rules:
+
+| Rule | Target |
+|------|--------|
+| `event.data.schemaVersion == 1` | `/documents` |
+| `event.data.schemaVersion == 2` | `/documents` |
+| `event.data.schemaVersion == 3` | `/documents` |
+| *(default)* | `/documents/unhandled` (DROP) |
+
+All three rules live inside the **same consumer pod**. Dapr delivers every message from the Kafka topic, the consumer processes the ones it knows, and drops the rest.
 
 ---
 
@@ -67,8 +80,8 @@ sequenceDiagram
     participant P as Producer
     participant SR as Schema Registry
     participant K as Kafka<br/>(documents topic)
-    participant D2 as Dapr Sidecar<br/>(consumer-v2)
-    participant C as Consumer App<br/>(SUPPORTED_VERSIONS=2)
+    participant D2 as Dapr Sidecar<br/>(consumer)
+    participant C as Consumer App<br/>(SUPPORTED_VERSIONS=1,2,3)
 
     Note over P,SR: Startup
     P->>SR: Register v1, v2, v3 under single subject<br/>"documents-value" (NONE compatibility)
@@ -78,18 +91,18 @@ sequenceDiagram
     P->>K: Publish plain JSON<br/>{"schemaVersion": 2, "tags": ["urgent"], ...}
     Note over K: Single topic, all versions mixed
 
-    Note over K,C: Consumer-v2 receives message
+    Note over K,C: Consumer receives v2 message
     K->>D2: Deliver message
     D2->>D2: Parse JSON payload<br/>Evaluate CEL: event.data.schemaVersion == 2? YES
     D2->>C: Forward to /documents
     C->>C: Process v2 document<br/>(tags as plain strings)
 
-    Note over K,C: Consumer-v2 receives a v3 document
-    K->>D2: Deliver v3 message
-    D2->>D2: Parse JSON payload<br/>Evaluate CEL: event.data.schemaVersion == 2? NO
+    Note over K,C: Consumer receives an unknown version
+    K->>D2: Deliver message with schemaVersion=99
+    D2->>D2: Parse JSON payload<br/>No CEL rule matches
     D2->>C: Forward to /documents/unhandled
     C-->>D2: {"status": "DROP"}
-    Note over D2: Acknowledged, never processed.<br/>V3's weighted-object tags never<br/>reach V2's string-expecting code.
+    Note over D2: Acknowledged, never processed.
 ```
 
 ### What Makes This "Smart"
@@ -147,41 +160,56 @@ graph LR
 |-------|----|----|
 | `tags` | `["urgent", "batch"]` (string array) | `[{"name":"urgent","weight":0.8}]` (object array) |
 
-A V2 consumer casting `tags` to `List<String>` would crash on V3 data. But **Dapr routing ensures V2 consumers never see V3 documents** — the breaking change is safe.
+Even though V2 and V3 have incompatible `tags` types, the **single consumer handles both safely** because Dapr routes each version to the correct handler path based on the CEL rules.
 
 All three schemas are registered under **one Schema Registry subject** (`documents-value`) with **NONE compatibility** mode, because Dapr routing provides the safety that would normally come from BACKWARD compatibility rules.
 
 ---
 
-## Adding a V4
+## Adding a V4 (with Knative Canary Rollout)
 
 ```mermaid
 graph LR
-    subgraph "Change (2 files)"
+    subgraph "Change"
         A1["SchemaRegistrar.java<br/>add SCHEMA_V4"]
         A2["DocumentGenerator.java<br/>add v4 doc builder"]
+        A3["consumer.yaml<br/>SUPPORTED_VERSIONS=1,2,3,4"]
     end
 
-    subgraph "Deploy"
-        B["consumer-v4<br/>SUPPORTED_VERSIONS=4"]
+    subgraph "Knative handles rollout"
+        B1["New revision created<br/>automatically"]
+        B2["Traffic split:<br/>80% old / 20% new"]
+        B3["Validate, then<br/>shift to 100%"]
     end
 
     subgraph "Unchanged"
         C1["Kafka topic"]
         C2["Dapr config"]
         C3["Routing logic"]
-        C4["Existing consumers"]
-        C5["Schema Registry subject"]
+        C4["Schema Registry subject"]
     end
 
-    A1 --> A2 --> B
+    A1 --> A2 --> A3 --> B1 --> B2 --> B3
 
     style C1 fill:#d1fae5,stroke:#10b981
     style C2 fill:#d1fae5,stroke:#10b981
     style C3 fill:#d1fae5,stroke:#10b981
     style C4 fill:#d1fae5,stroke:#10b981
-    style C5 fill:#d1fae5,stroke:#10b981
+    style B1 fill:#dbeafe,stroke:#3b82f6
+    style B2 fill:#dbeafe,stroke:#3b82f6
+    style B3 fill:#dbeafe,stroke:#3b82f6
 ```
+
+Steps to add V4:
+
+1. Add `SCHEMA_V4` to `SchemaRegistrar.java`
+2. Add v4 document builder to `DocumentGenerator.java`
+3. Change `SUPPORTED_VERSIONS` from `"1,2,3"` to `"1,2,3,4"` in the consumer deployment
+4. Deploy — Knative automatically creates a new revision
+5. Split traffic (e.g. 80/20) between old and new revisions for canary validation
+6. Once validated, shift 100% to the new revision
+
+No new deployments, no new services, no Kafka/Dapr changes. One config change.
 
 ---
 
@@ -212,16 +240,14 @@ kubectl -n versioned-demo port-forward svc/dashboard 5001:5001
 # Producer
 kubectl -n versioned-demo logs -l app=producer -c producer -f
 
-# All consumers
+# Consumer (all versions)
 kubectl -n versioned-demo logs -l app=consumer -c consumer -f
 ```
 
 ### Check Consumer Stats
 
 ```bash
-for v in v1 v2 v3; do
-  kubectl -n versioned-demo exec deploy/consumer-$v -c consumer -- curl -s localhost:8080/status
-done
+kubectl -n versioned-demo exec deploy/consumer -c consumer -- curl -s localhost:8080/status
 ```
 
 ### Standalone Mode (No Kubernetes)
@@ -252,7 +278,7 @@ docker compose down -v
 │   └── src/.../producer/
 │       ├── DocumentGenerator.java  # Publishes plain JSON, Dapr wraps in CloudEvents
 │       └── SchemaRegistrar.java    # Registers schemas under single SR subject
-├── consumer-service/               # Java consumer (version-configurable)
+├── consumer-service/               # Java consumer (multi-version)
 │   └── src/.../consumer/
 │       └── controller/
 │           └── SubscriptionController.java  # Dapr CEL routing + version-specific handlers
@@ -261,8 +287,12 @@ docker compose down -v
 ├── k8s/                            # Kubernetes manifests
 │   ├── infrastructure/             # ZooKeeper, Kafka, Schema Registry, MongoDB
 │   ├── dapr/                       # Dapr placement + components ConfigMap
-│   ├── services/                   # Producer, consumers (with daprd sidecars), dashboard
-│   └── knative/                    # Knative Service definitions (reference)
+│   ├── services/                   # Producer, consumer (unified), dashboard
+│   │   ├── producer.yaml
+│   │   ├── consumer.yaml           # Single consumer: SUPPORTED_VERSIONS=1,2,3
+│   │   └── dashboard.yaml
+│   └── knative/                    # Knative Service with revision/traffic-split pattern
+│       └── consumer-ksvc.yaml
 └── microshift-docker-compose/      # Git submodule: MicroShift in Docker
 ```
 
@@ -274,12 +304,26 @@ docker compose down -v
 | [Dapr](https://dapr.io/) | Content-based pub/sub routing (CEL on payload), state store |
 | [MongoDB](https://www.mongodb.com/) | Document persistence via Dapr state store |
 | [MicroShift](https://microshift.io/) | Lightweight OpenShift/K8s (via Docker Compose) |
+| [Knative Serving](https://knative.dev/) | Revision management + traffic splitting for canary rollouts |
 | Java 17 / Spring Boot 3 | Microservice runtime |
 | Python / [FastHTML](https://fastht.ml/) | Live pipeline dashboard |
 
 ---
 
 ## Design Decisions
+
+### Why a Single Multi-Version Consumer?
+
+Instead of deploying N consumers for N schema versions:
+
+| Per-version consumers | Multi-version consumer |
+|-----------------------|----------------------|
+| N pods, N Dapr sidecars, N services | 1 pod, 1 Dapr sidecar, 1 service |
+| Adding V4 = new deployment + service + config | Adding V4 = change one env var |
+| Resource usage scales with version count | Resource usage stays constant |
+| Knative: N separate services to manage | Knative: 1 service with revision-based rollout |
+
+The consumer code already handles multiple versions via `SUPPORTED_VERSIONS` — no reason to run separate pods.
 
 ### Why NONE Compatibility in Schema Registry?
 

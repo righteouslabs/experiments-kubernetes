@@ -1,37 +1,25 @@
 ##
-## Knative Services for versioned consumers
+## Knative Service: Single consumer with revision-based versioning
 ##
-## Each Knative Service represents a consumer that handles a specific set of
-## schema versions.  Knative provides:
-##   - Automatic scale-to-zero when no messages are flowing
-##   - Revision management for rolling out new versions
-##   - Traffic splitting between revisions for canary/blue-green deploys
+## Current revision handles all schema versions (1,2,3).
+## When V4 is added:
+##   1. Change SUPPORTED_VERSIONS to "1,2,3,4"
+##   2. Deploy -> Knative creates a new revision automatically
+##   3. Traffic split between old and new revision for canary rollout
 ##
-## The traffic block at the bottom shows how to split traffic between
-## different revisions of the same service.
-##
----
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
-  name: consumer-v1
+  name: consumer
   namespace: versioned-demo
-  labels:
-    app: consumer
-    version: v1
-  annotations:
-    dapr.io/enabled: "true"
-    dapr.io/app-id: "consumer-v1"
-    dapr.io/app-port: "8080"
 spec:
   template:
     metadata:
-      name: consumer-v1-rev1
       annotations:
         autoscaling.knative.dev/minScale: "1"
-        autoscaling.knative.dev/maxScale: "5"
+        autoscaling.knative.dev/maxScale: "10"
         dapr.io/enabled: "true"
-        dapr.io/app-id: "consumer-v1"
+        dapr.io/app-id: "consumer"
         dapr.io/app-port: "8080"
     spec:
       containers:
@@ -40,95 +28,23 @@ spec:
             - containerPort: 8080
           env:
             - name: SUPPORTED_VERSIONS
-              value: "1"
+              value: "1,2,3"
             - name: SPRING_APPLICATION_NAME
-              value: "consumer-v1"
+              value: "consumer"
             - name: DAPR_HTTP_PORT
               value: "3500"
----
-apiVersion: serving.knative.dev/v1
-kind: Service
-metadata:
-  name: consumer-v2
-  namespace: versioned-demo
-  labels:
-    app: consumer
-    version: v2
-  annotations:
-    dapr.io/enabled: "true"
-    dapr.io/app-id: "consumer-v2"
-    dapr.io/app-port: "8080"
-spec:
-  template:
-    metadata:
-      name: consumer-v2-rev1
-      annotations:
-        autoscaling.knative.dev/minScale: "1"
-        autoscaling.knative.dev/maxScale: "5"
-        dapr.io/enabled: "true"
-        dapr.io/app-id: "consumer-v2"
-        dapr.io/app-port: "8080"
-    spec:
-      containers:
-        - image: document-consumer:latest
-          ports:
-            - containerPort: 8080
-          env:
-            - name: SUPPORTED_VERSIONS
-              value: "2"
-            - name: SPRING_APPLICATION_NAME
-              value: "consumer-v2"
-            - name: DAPR_HTTP_PORT
-              value: "3500"
----
-apiVersion: serving.knative.dev/v1
-kind: Service
-metadata:
-  name: consumer-v3
-  namespace: versioned-demo
-  labels:
-    app: consumer
-    version: v3
-  annotations:
-    dapr.io/enabled: "true"
-    dapr.io/app-id: "consumer-v3"
-    dapr.io/app-port: "8080"
-spec:
-  template:
-    metadata:
-      name: consumer-v3-rev1
-      annotations:
-        autoscaling.knative.dev/minScale: "1"
-        autoscaling.knative.dev/maxScale: "5"
-        dapr.io/enabled: "true"
-        dapr.io/app-id: "consumer-v3"
-        dapr.io/app-port: "8080"
-    spec:
-      containers:
-        - image: document-consumer:latest
-          ports:
-            - containerPort: 8080
-          env:
-            - name: SUPPORTED_VERSIONS
-              value: "3"
-            - name: SPRING_APPLICATION_NAME
-              value: "consumer-v3"
-            - name: DAPR_HTTP_PORT
-              value: "3500"
-
-##
-## Example: traffic-splitting for a canary rollout
-##
-## When deploying a new consumer revision that also supports v3,
-## you can split traffic between the old and new revisions:
-##
-##   spec:
-##     traffic:
-##       - revisionName: consumer-v3-rev1
-##         percent: 80
-##       - revisionName: consumer-v3-rev2
-##         percent: 20
-##         tag: canary
-##
-## This routes 80% of v3 messages to the existing revision and 20%
-## to the new one, letting you validate the new logic before full rollout.
+  ##
+  ## Traffic splitting for canary rollout when adding V4:
+  ##
+  ## After deploying with SUPPORTED_VERSIONS="1,2,3,4", Knative creates
+  ## a new revision. You can then split traffic:
+  ##
+  ##   traffic:
+  ##     - revisionName: consumer-00001   # old: handles v1,v2,v3
+  ##       percent: 80
+  ##     - latestRevision: true           # new: handles v1,v2,v3,v4
+  ##       percent: 20
+  ##       tag: canary
+  ##
+  ## Once validated, shift 100% to the new revision.
+  ##

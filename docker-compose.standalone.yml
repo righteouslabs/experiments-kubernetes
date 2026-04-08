@@ -83,9 +83,7 @@ services:
     ports:
       - "5001:5001"
     environment:
-      CONSUMER_V1_URL: http://consumer-v1:8080
-      CONSUMER_V2_URL: http://consumer-v2:8080
-      CONSUMER_V3_URL: http://consumer-v3:8080
+      CONSUMER_URL: http://consumer:8080
       SCHEMA_REGISTRY_URL: http://schema-registry:8081
     depends_on:
       kafka:
@@ -129,26 +127,26 @@ services:
       - dapr-placement
     network_mode: "service:producer"
 
-  # ======================== Consumer V1 ========================
+  # ======================== Consumer (all versions) ========================
 
-  consumer-v1:
+  consumer:
     build: ./consumer-service
     environment:
       DAPR_HTTP_PORT: 3500
-      SUPPORTED_VERSIONS: "1"
-      SPRING_APPLICATION_NAME: consumer-v1
+      SUPPORTED_VERSIONS: "1,2,3"
+      SPRING_APPLICATION_NAME: consumer
     depends_on:
       kafka:
         condition: service_healthy
       mongodb:
         condition: service_healthy
 
-  consumer-v1-dapr:
+  consumer-dapr:
     image: daprio/daprd:1.12.4
     command:
       [
         "./daprd",
-        "-app-id", "consumer-v1",
+        "-app-id", "consumer",
         "-app-port", "8080",
         "-placement-host-address", "dapr-placement:50006",
         "-resources-path", "/components",
@@ -158,69 +156,7 @@ services:
       - ./dapr/components:/components:ro
     depends_on:
       - dapr-placement
-    network_mode: "service:consumer-v1"
-
-  # ======================== Consumer V2 ========================
-
-  consumer-v2:
-    build: ./consumer-service
-    environment:
-      DAPR_HTTP_PORT: 3500
-      SUPPORTED_VERSIONS: "2"
-      SPRING_APPLICATION_NAME: consumer-v2
-    depends_on:
-      kafka:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-
-  consumer-v2-dapr:
-    image: daprio/daprd:1.12.4
-    command:
-      [
-        "./daprd",
-        "-app-id", "consumer-v2",
-        "-app-port", "8080",
-        "-placement-host-address", "dapr-placement:50006",
-        "-resources-path", "/components",
-        "-log-level", "info",
-      ]
-    volumes:
-      - ./dapr/components:/components:ro
-    depends_on:
-      - dapr-placement
-    network_mode: "service:consumer-v2"
-
-  # ======================== Consumer V3 ========================
-
-  consumer-v3:
-    build: ./consumer-service
-    environment:
-      DAPR_HTTP_PORT: 3500
-      SUPPORTED_VERSIONS: "3"
-      SPRING_APPLICATION_NAME: consumer-v3
-    depends_on:
-      kafka:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-
-  consumer-v3-dapr:
-    image: daprio/daprd:1.12.4
-    command:
-      [
-        "./daprd",
-        "-app-id", "consumer-v3",
-        "-app-port", "8080",
-        "-placement-host-address", "dapr-placement:50006",
-        "-resources-path", "/components",
-        "-log-level", "info",
-      ]
-    volumes:
-      - ./dapr/components:/components:ro
-    depends_on:
-      - dapr-placement
-    network_mode: "service:consumer-v3"
+    network_mode: "service:consumer"
 
 volumes:
   mongodb_data:
