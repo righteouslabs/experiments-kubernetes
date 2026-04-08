@@ -65,6 +65,7 @@ services:
         condition: service_completed_successfully
     ports:
       - "6443:6443"
+      - "30501:30501"   # NodePort for dashboard (http://localhost:30501)
     volumes:
       - /dev:/dev
       - microshift-data:/var/lib/microshift

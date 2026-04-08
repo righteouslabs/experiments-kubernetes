@@ -4,8 +4,9 @@
 ## Shows real-time consumer stats, Schema Registry subjects,
 ## and Dapr routing rules. Auto-refreshes every 3 seconds.
 ##
-## Access via: kubectl -n versioned-demo port-forward svc/dashboard 5001:5001
-## Then open: http://localhost:5001
+## Exposed via NodePort 30501 on the MicroShift container,
+## mapped to the host in docker-compose.yml.
+## Open: http://localhost:30501
 ##
 apiVersion: apps/v1
 kind: Deployment
@@ -54,11 +55,13 @@ metadata:
   name: dashboard
   namespace: versioned-demo
 spec:
+  type: NodePort
   selector:
     app: dashboard
   ports:
     - port: 5001
       targetPort: 5001
+      nodePort: 30501
 ---
 ## Services for consumers so the dashboard can reach them by name
 apiVersion: v1
