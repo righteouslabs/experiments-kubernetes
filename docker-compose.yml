@@ -29,8 +29,8 @@ services:
   # =========================================================================
 
   microshift:
-    mem_limit: 8g
-    memswap_limit: 8g
+    mem_limit: 12g
+    memswap_limit: 12g
     ports:
       - "6443:6443"
       - "9000:9000"
