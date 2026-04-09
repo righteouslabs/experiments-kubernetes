@@ -16,94 +16,25 @@
 #   docker compose -f docker-compose.standalone.yml up --build
 ###############################################################################
 
-x-microshift-image: &microshift-image
-  ghcr.io/microshift-io/microshift:4.21.0_g29f429c21_4.21.0_okd_scos.ec.15
+# Include the MicroShift submodule's compose file, which provides:
+#   lvm-setup, microshift, kubeconfig, cluster-setup, openshift-console
+#   volumes: microshift-data, console-data
+include:
+  - path: ./microshift-docker-compose/docker-compose.yml
 
 services:
 
   # =========================================================================
-  # MicroShift cluster (Kubernetes in Docker)
+  # Override MicroShift: more memory + dashboard NodePort
   # =========================================================================
 
-  lvm-setup:
-    image: *microshift-image
-    container_name: microshift-lvm-setup
-    privileged: true
-    volumes:
-      - /dev:/dev
-      - microshift-data:/var/lib/microshift
-    entrypoint: /bin/bash
-    command:
-      - -c
-      - |
-        VG_NAME="myvg1"
-        BACKING_FILE="/var/lib/microshift/lvm-backing.img"
-        if vgs "$$VG_NAME" &>/dev/null; then
-            echo "Volume group $$VG_NAME already exists, skipping"
-            exit 0
-        fi
-        truncate -s 1G "$$BACKING_FILE"
-        LOOP=$$(losetup --find --show "$$BACKING_FILE")
-        vgcreate -f -y "$$VG_NAME" "$$LOOP"
-        echo "LVM setup complete"
-
   microshift:
-    image: *microshift-image
-    container_name: microshift
-    hostname: microshift
-    privileged: true
-    tty: true
-    cpus: 2
     mem_limit: 8g
     memswap_limit: 8g
-    ulimits:
-      nofile:
-        soft: 524288
-        hard: 524288
-    depends_on:
-      lvm-setup:
-        condition: service_completed_successfully
     ports:
       - "6443:6443"
+      - "9000:9000"
       - "30501:30501"   # NodePort for dashboard (http://localhost:30501)
-    volumes:
-      - /dev:/dev
-      - microshift-data:/var/lib/microshift
-      - ./microshift-docker-compose/config/api_server.yaml:/etc/microshift/config.d/api_server.yaml:ro
-      - ./microshift-docker-compose/config/storage.yaml:/etc/microshift/config.d/01-disable-storage-csi.yaml:ro
-      - ./microshift-docker-compose/manifests/topolvm-fix:/etc/microshift/manifests.d/002-topolvm-fix:ro
-    tmpfs:
-      - /var/lib/containers
-      - /tmp
-      - /run
-    dns_search:
-      - "."
-    healthcheck:
-      test: ["CMD", "test", "-f", "/var/lib/microshift/resources/kubeadmin/microshift/kubeconfig"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 120s
-
-  kubeconfig:
-    image: alpine:latest
-    container_name: microshift-kubeconfig
-    depends_on:
-      microshift:
-        condition: service_healthy
-    volumes:
-      - microshift-data:/var/lib/microshift:ro
-      - ./microshift-docker-compose:/output
-    entrypoint: /bin/sh
-    command:
-      - -c
-      - |
-        sed 's|server: https://microshift:6443|server: https://localhost:6443|' \
-          /var/lib/microshift/resources/kubeadmin/microshift/kubeconfig \
-          | sed '/certificate-authority-data:/d' \
-          | sed 's|server: https://localhost:6443|insecure-skip-tls-verify: true\n    server: https://localhost:6443|' \
-          > /output/kubeconfig
-        echo "kubeconfig written to ./microshift-docker-compose/kubeconfig"
 
   # =========================================================================
   # Phase 1: Build custom Java images and load into MicroShift's CRI-O
@@ -291,6 +222,3 @@ services:
         echo "  export KUBECONFIG=\$$(pwd)/microshift-docker-compose/kubeconfig"
         echo "  kubectl -n versioned-demo logs -l app=producer -f"
         echo "  kubectl -n versioned-demo logs -l app=consumer -f"
-
-volumes:
-  microshift-data:
