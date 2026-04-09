@@ -29,10 +29,10 @@ spec:
               value: "1000"
           resources:
             requests:
-              memory: "192Mi"
+              memory: "256Mi"
               cpu: "100m"
             limits:
-              memory: "320Mi"
+              memory: "512Mi"
               cpu: "250m"
 
         - name: daprd
@@ -57,10 +57,10 @@ spec:
               readOnly: true
           resources:
             requests:
-              memory: "32Mi"
+              memory: "64Mi"
               cpu: "50m"
             limits:
-              memory: "128Mi"
+              memory: "192Mi"
               cpu: "200m"
 
       volumes:
