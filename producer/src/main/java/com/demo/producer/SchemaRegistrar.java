@@ -142,18 +142,67 @@ public class SchemaRegistrar {
     public void registerSchemas() {
         log.info("Registering schemas under single subject '{}' at {}", SUBJECT, schemaRegistryUrl);
 
+        // Wait for Schema Registry to be reachable before attempting registration.
+        // Without this, if the producer starts before schema-registry is ready, the
+        // initial POST fails and the producer would never re-register, leaving the
+        // registry permanently empty until the next pod restart happens to land on
+        // a ready registry.
+        if (!waitForSchemaRegistry()) {
+            log.error("Schema Registry never became reachable at {}; schemas will NOT be registered. "
+                    + "Downstream consumers/dashboard will report 0 subjects.", schemaRegistryUrl);
+            return;
+        }
+
         // Set compatibility to NONE so non-additive changes are accepted
         setCompatibility(SUBJECT, "NONE");
 
         // Register each version in order under the same subject.
         // Schema Registry assigns version numbers 1, 2, 3, ... automatically.
+        int registered = 0;
         for (var entry : SCHEMAS.entrySet()) {
             int version = entry.getKey();
             SchemaDefinition def = entry.getValue();
-            registerSchema(SUBJECT, version, def);
+            if (registerSchema(SUBJECT, version, def)) {
+                registered++;
+            }
         }
 
-        log.info("All schemas registered. View at: {}/subjects/{}/versions", schemaRegistryUrl, SUBJECT);
+        if (registered == SCHEMAS.size()) {
+            log.info("All {} schemas registered. View at: {}/subjects/{}/versions",
+                    registered, schemaRegistryUrl, SUBJECT);
+        } else {
+            log.error("Only {}/{} schemas registered. Schema Registry will be incomplete.",
+                    registered, SCHEMAS.size());
+        }
+    }
+
+    /**
+     * Polls Schema Registry until its /subjects endpoint returns successfully
+     * or the retry budget is exhausted. Uses exponential backoff capped at 10s.
+     * Returns true if the registry became reachable, false otherwise.
+     */
+    private boolean waitForSchemaRegistry() {
+        String url = schemaRegistryUrl + "/subjects";
+        int maxAttempts = 30; // ~5 minutes of total wait at capped backoff
+        long delayMs = 1000L;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                restTemplate.getForEntity(url, String.class);
+                log.info("  Schema Registry reachable after {} attempt(s)", attempt);
+                return true;
+            } catch (Exception e) {
+                log.info("  Schema Registry not ready (attempt {}/{}): {} — retrying in {}ms",
+                        attempt, maxAttempts, e.getMessage(), delayMs);
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+                delayMs = Math.min(delayMs * 2, 10_000L);
+            }
+        }
+        return false;
     }
 
     /**
@@ -195,23 +244,43 @@ public class SchemaRegistrar {
         }
     }
 
-    private void registerSchema(String subject, int version, SchemaDefinition def) {
+    private boolean registerSchema(String subject, int version, SchemaDefinition def) {
         String url = schemaRegistryUrl + "/subjects/" + subject + "/versions";
+        String escaped = def.schemaJson().replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
+        String body = "{\"schemaType\":\"JSON\",\"schema\":\"" + escaped + "\"}";
 
-        try {
-            String escaped = def.schemaJson().replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
-            String body = "{\"schemaType\":\"JSON\",\"schema\":\"" + escaped + "\"}";
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.valueOf("application/vnd.schemaregistry.v1+json"));
+        HttpEntity<String> entity = new HttpEntity<>(body, headers);
 
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.valueOf("application/vnd.schemaregistry.v1+json"));
-
-            HttpEntity<String> entity = new HttpEntity<>(body, headers);
-            restTemplate.postForEntity(url, entity, String.class);
-
-            log.info("  Registered {}/v{}: {} required fields", subject, version, def.requiredFields().size());
-        } catch (Exception e) {
-            log.warn("  Failed to register {}/v{}: {}", subject, version, e.getMessage());
+        // Retry transient errors (connection refused, 5xx, etc.) with backoff.
+        int maxAttempts = 5;
+        long delayMs = 500L;
+        Exception lastError = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                restTemplate.postForEntity(url, entity, String.class);
+                log.info("  Registered {}/v{}: {} required fields",
+                        subject, version, def.requiredFields().size());
+                return true;
+            } catch (Exception e) {
+                lastError = e;
+                log.warn("  Attempt {}/{} to register {}/v{} failed: {}",
+                        attempt, maxAttempts, subject, version, e.getMessage());
+                if (attempt < maxAttempts) {
+                    try {
+                        Thread.sleep(delayMs);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return false;
+                    }
+                    delayMs = Math.min(delayMs * 2, 5_000L);
+                }
+            }
         }
+        log.error("  FAILED to register {}/v{} after {} attempts",
+                subject, version, maxAttempts, lastError);
+        return false;
     }
 
     private record SchemaDefinition(List<String> requiredFields, String schemaJson) {}
