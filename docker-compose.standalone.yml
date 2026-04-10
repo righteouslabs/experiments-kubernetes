@@ -84,6 +84,7 @@ services:
       - "5001:5001"
     environment:
       CONSUMER_URL: http://consumer:8080
+      PRODUCER_URL: http://producer:8080
       SCHEMA_REGISTRY_URL: http://schema-registry:8081
     depends_on:
       kafka:

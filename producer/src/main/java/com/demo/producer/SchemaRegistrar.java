@@ -58,15 +58,16 @@ public class SchemaRegistrar {
     private static final Map<Integer, SchemaDefinition> SCHEMAS = new LinkedHashMap<>();
     static {
         SCHEMAS.put(1, new SchemaDefinition(
-            List.of("id", "schemaVersion", "title", "body", "createdAt"),
+            List.of("id", "correlationId", "schemaVersion", "title", "body", "createdAt"),
             """
             {
               "$schema": "http://json-schema.org/draft-07/schema#",
               "title": "Document V1 — Base document",
               "type": "object",
-              "required": ["id", "schemaVersion", "title", "body", "createdAt"],
+              "required": ["id", "correlationId", "schemaVersion", "title", "body", "createdAt"],
               "properties": {
                 "id": { "type": "string" },
+                "correlationId": { "type": "string" },
                 "schemaVersion": { "type": "integer" },
                 "title": { "type": "string" },
                 "body": { "type": "string" },
@@ -77,15 +78,16 @@ public class SchemaRegistrar {
         ));
 
         SCHEMAS.put(2, new SchemaDefinition(
-            List.of("id", "schemaVersion", "title", "body", "author", "tags", "createdAt"),
+            List.of("id", "correlationId", "schemaVersion", "title", "body", "author", "tags", "createdAt"),
             """
             {
               "$schema": "http://json-schema.org/draft-07/schema#",
               "title": "Document V2 — Adds author and tags",
               "type": "object",
-              "required": ["id", "schemaVersion", "title", "body", "author", "tags", "createdAt"],
+              "required": ["id", "correlationId", "schemaVersion", "title", "body", "author", "tags", "createdAt"],
               "properties": {
                 "id": { "type": "string" },
+                "correlationId": { "type": "string" },
                 "schemaVersion": { "type": "integer" },
                 "title": { "type": "string" },
                 "body": { "type": "string" },
@@ -98,16 +100,17 @@ public class SchemaRegistrar {
         ));
 
         SCHEMAS.put(3, new SchemaDefinition(
-            List.of("id", "schemaVersion", "title", "body", "author", "tags", "priority", "metadata", "createdAt"),
+            List.of("id", "correlationId", "schemaVersion", "title", "body", "author", "tags", "priority", "metadata", "createdAt"),
             """
             {
               "$schema": "http://json-schema.org/draft-07/schema#",
               "title": "Document V3 — Adds priority and structured metadata (non-additive: tags changed to weighted objects)",
               "description": "V3 demonstrates a NON-ADDITIVE change: 'tags' is now an array of {name,weight} objects instead of plain strings. A V2 consumer would break on this. Dapr routing ensures V2 consumers never see V3 documents.",
               "type": "object",
-              "required": ["id", "schemaVersion", "title", "body", "author", "tags", "priority", "metadata", "createdAt"],
+              "required": ["id", "correlationId", "schemaVersion", "title", "body", "author", "tags", "priority", "metadata", "createdAt"],
               "properties": {
                 "id": { "type": "string" },
+                "correlationId": { "type": "string" },
                 "schemaVersion": { "type": "integer" },
                 "title": { "type": "string" },
                 "body": { "type": "string" },
@@ -127,8 +130,7 @@ public class SchemaRegistrar {
                   "type": "object",
                   "properties": {
                     "source": { "type": "string" },
-                    "region": { "type": "string" },
-                    "correlationId": { "type": "string" }
+                    "region": { "type": "string" }
                   }
                 },
                 "createdAt": { "type": "string" }

@@ -88,6 +88,22 @@ public class SubscriptionController {
     private long processedCount = 0;
     private long droppedCount = 0;
 
+    // Circular buffer of recently processed messages — written by the
+    // Dapr HTTP handler thread(s), read by HTTP handlers on the /recent
+    // endpoint. All access is guarded by `recentLock`.
+    private static final int RECENT_BUFFER_SIZE = 20;
+    private final Object recentLock = new Object();
+    private final ArrayDeque<RecentProcessed> recent = new ArrayDeque<>(RECENT_BUFFER_SIZE);
+
+    /** Snapshot of a recently processed document for the /recent endpoint. */
+    public record RecentProcessed(
+            String id,
+            int version,
+            String correlationId,
+            String title,
+            String processedAt
+    ) {}
+
     @PostConstruct
     public void init() {
         supportedVersions = Arrays.stream(supportedVersionsStr.split(","))
@@ -159,15 +175,34 @@ public class SubscriptionController {
 
             String id = String.valueOf(data.get("id"));
             String title = String.valueOf(data.get("title"));
+            String correlationId = data.get("correlationId") == null
+                    ? ""
+                    : String.valueOf(data.get("correlationId"));
 
             processedCount++;
-            log.info("[{}] Processing v{} document: id={} title=\"{}\" [processed={}, dropped={}]",
-                    appName, schemaVersion, id, title, processedCount, droppedCount);
+            log.info("[{}] Processing v{} document: id={} correlationId={} title=\"{}\" [processed={}, dropped={}]",
+                    appName, schemaVersion, id, correlationId, title, processedCount, droppedCount);
 
             // Version-specific business logic — each version can have
             // fundamentally different processing, including non-additive changes
             processDocument(schemaVersion, data);
             storeDocument(id, data);
+
+            // Record in the recent-activity buffer so the dashboard can
+            // correlate this processed message with the producer's publication.
+            RecentProcessed processed = new RecentProcessed(
+                    id,
+                    schemaVersion,
+                    correlationId,
+                    title,
+                    Instant.now().toString()
+            );
+            synchronized (recentLock) {
+                if (recent.size() >= RECENT_BUFFER_SIZE) {
+                    recent.pollLast();
+                }
+                recent.addFirst(processed);
+            }
 
             return ResponseEntity.ok(Map.of("status", "SUCCESS"));
 
@@ -198,22 +233,24 @@ public class SubscriptionController {
      */
     @SuppressWarnings("unchecked")
     private void processDocument(int version, Map<String, Object> data) {
+        Object correlationId = data.get("correlationId");
         switch (version) {
             case 1 -> {
-                log.info("  [v1] basic document — title=\"{}\"", data.get("title"));
+                log.info("  [v1] basic document — correlationId={} title=\"{}\"",
+                        correlationId, data.get("title"));
             }
             case 2 -> {
                 // V2 tags are plain strings: ["urgent", "batch"]
                 List<String> tags = (List<String>) data.get("tags");
-                log.info("  [v2] author={}, tags={} (plain strings)",
-                        data.get("author"), tags);
+                log.info("  [v2] correlationId={} author={} tags={} (plain strings)",
+                        correlationId, data.get("author"), tags);
             }
             case 3 -> {
                 // V3 tags are weighted objects: [{name:"urgent", weight:0.8}]
                 // This is a NON-ADDITIVE change from V2's string array.
                 List<Map<String, Object>> tags = (List<Map<String, Object>>) data.get("tags");
-                log.info("  [v3] priority={}, tags={} (weighted objects)",
-                        data.get("priority"),
+                log.info("  [v3] correlationId={} priority={} tags={} (weighted objects)",
+                        correlationId, data.get("priority"),
                         tags.stream()
                                 .map(t -> t.get("name") + ":" + t.get("weight"))
                                 .collect(Collectors.joining(", ")));
@@ -244,6 +281,18 @@ public class SubscriptionController {
             restTemplate.postForEntity(stateUrl, entity, String.class);
         } catch (Exception e) {
             log.warn("  Failed to store document {}: {}", id, e.getMessage());
+        }
+    }
+
+    /**
+     * Returns the most recent messages processed by this consumer,
+     * newest first, so the dashboard can correlate them with the
+     * producer's recent publications.
+     */
+    @GetMapping("/recent")
+    public List<RecentProcessed> recent() {
+        synchronized (recentLock) {
+            return new ArrayList<>(recent);
         }
     }
 

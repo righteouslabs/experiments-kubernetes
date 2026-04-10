@@ -35,6 +35,8 @@ spec:
           env:
             - name: CONSUMER_URL
               value: "http://consumer.versioned-demo.svc.cluster.local:8080"
+            - name: PRODUCER_URL
+              value: "http://producer.versioned-demo.svc.cluster.local:8080"
             - name: SCHEMA_REGISTRY_URL
               value: "http://schema-registry.versioned-demo.svc.cluster.local:8081"
           resources:

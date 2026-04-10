@@ -30,11 +30,17 @@ import java.util.*;
  * V3 demonstrates a NON-ADDITIVE change: "tags" becomes an array of
  * {name, weight} objects instead of plain strings. This would break a
  * V2 consumer, but Dapr routing ensures V2 consumers never see V3 docs.
+ *
+ * Every document also carries a top-level correlationId so operators can
+ * trace an individual message end-to-end from producer publication to
+ * consumer processing via the dashboard's Recent Activity view.
  */
 @Component
 public class DocumentGenerator {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentGenerator.class);
+
+    private static final int RECENT_BUFFER_SIZE = 20;
 
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper mapper = new ObjectMapper();
@@ -62,6 +68,12 @@ public class DocumentGenerator {
     private static final String[] REGIONS = {"us-east-1", "us-west-2", "eu-west-1", "ap-south-1"};
 
     private long sequenceNumber = 0;
+
+    // Circular buffer of recently published messages — written by the
+    // @Scheduled publisher thread, read by HTTP handlers on the /recent
+    // endpoint. All access is guarded by `recentLock`.
+    private final Object recentLock = new Object();
+    private final ArrayDeque<RecentMessage> recent = new ArrayDeque<>(RECENT_BUFFER_SIZE);
 
     public DocumentGenerator(SchemaRegistrar schemaRegistrar) {
         this.schemaRegistrar = schemaRegistrar;
@@ -92,8 +104,27 @@ public class DocumentGenerator {
             HttpEntity<String> entity = new HttpEntity<>(payload, headers);
             restTemplate.postForEntity(daprUrl, entity, String.class);
 
-            log.info("[seq={}] Published v{} document: id={} title=\"{}\"",
-                    sequenceNumber, version, document.get("id"), document.get("title"));
+            String id = String.valueOf(document.get("id"));
+            String correlationId = String.valueOf(document.get("correlationId"));
+            String title = String.valueOf(document.get("title"));
+
+            log.info("[seq={}] Published v{} document: id={} correlationId={} title=\"{}\"",
+                    sequenceNumber, version, id, correlationId, title);
+
+            RecentMessage msg = new RecentMessage(
+                    sequenceNumber,
+                    version,
+                    id,
+                    correlationId,
+                    title,
+                    Instant.now().toString()
+            );
+            synchronized (recentLock) {
+                if (recent.size() >= RECENT_BUFFER_SIZE) {
+                    recent.pollLast();
+                }
+                recent.addFirst(msg);
+            }
         } catch (Exception e) {
             log.warn("[seq={}] Failed to publish: {}", sequenceNumber, e.getMessage());
         }
@@ -104,8 +135,10 @@ public class DocumentGenerator {
     private Map<String, Object> buildDocument(int version) {
         Map<String, Object> doc = new LinkedHashMap<>();
 
-        // v1 fields (always present)
+        // v1 fields (always present) — correlationId is a top-level field on
+        // every document, regardless of schema version, to enable tracing.
         doc.put("id", UUID.randomUUID().toString());
+        doc.put("correlationId", UUID.randomUUID().toString());
         doc.put("schemaVersion", version);
         doc.put("title", pick(TITLES));
         doc.put("body", "Document body #" + sequenceNumber + " - " + Instant.now());
@@ -130,7 +163,6 @@ public class DocumentGenerator {
             Map<String, String> metadata = new LinkedHashMap<>();
             metadata.put("source", pick(SOURCES));
             metadata.put("region", pick(REGIONS));
-            metadata.put("correlationId", UUID.randomUUID().toString());
             doc.put("metadata", metadata);
         }
 
@@ -140,4 +172,26 @@ public class DocumentGenerator {
     private String pick(String[] values) {
         return values[random.nextInt(values.length)];
     }
+
+    /** Returns a snapshot of the recent-publication buffer, newest first. */
+    public List<RecentMessage> getRecent() {
+        synchronized (recentLock) {
+            return new ArrayList<>(recent);
+        }
+    }
+
+    /** Returns the total number of publish attempts made so far. */
+    public long getPublishedCount() {
+        return sequenceNumber;
+    }
+
+    /** Snapshot of a recently published document for the /recent endpoint. */
+    public record RecentMessage(
+            long seq,
+            int version,
+            String id,
+            String correlationId,
+            String title,
+            String publishedAt
+    ) {}
 }
