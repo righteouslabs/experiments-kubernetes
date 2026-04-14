@@ -1,0 +1,95 @@
+server:
+  port: 8080
+
+service-card:
+  purpose: >-
+    Consumes enriched documents from `documents.enriched` and evaluates a
+    DMN decision table to split them across four output topics —
+    `packages.express`, `packages.standard`, `packages.bulk`, and
+    `packages.quarantine`. The DMN file is the source of truth; POs edit
+    it directly in VS Code or sandbox.kie.org.
+
+# Observability toggles — mirror lowcode-scf's conventions.
+observability:
+  routing:
+    package-routed:
+      metric:
+        enabled: true
+      log:
+        enabled: true
+  tags:
+    topic:
+      allow: packages.express,packages.standard,packages.bulk,packages.quarantine
+    priority:
+      allow: HIGH,NORMAL,LOW,MEDIUM,UNKNOWN
+    grade:
+      allow: A,B,C,UNKNOWN
+    routing_reason:
+      # Allow-list of the 6 human-readable reasons from the DMN plus
+      # a short "other" fallback for surprises.
+      allow: >-
+        Top priority + top grade,
+        High priority with substantial payload,
+        Standard flow,
+        Bulk routing for larger payloads,
+        Low priority - batched,
+        Fallback - needs review
+
+spring:
+  application:
+    name: package-router
+
+  # DMN runtime is wired by DmnRuntimeConfig, which scans
+  # classpath*:dmn/*.dmn at startup.
+
+  # MongoDB for audit records. Host is resolved via K8s DNS.
+  data:
+    mongodb:
+      uri: ${MONGODB_URI:mongodb://mongodb.versioned-demo.svc.cluster.local:27017/documentsdb}
+      database: documentsdb
+      auto-index-creation: false
+
+  cloud:
+    function:
+      definition: route
+    stream:
+      # Dynamic destinations for the DMN-selected output topics.
+      dynamic-destinations: packages.express,packages.standard,packages.bulk,packages.quarantine
+      bindings:
+        route-in-0:
+          destination: documents.enriched
+          group: package-router
+          content-type: application/json
+          consumer:
+            max-attempts: 3
+      kafka:
+        binder:
+          brokers: ${KAFKA_BROKERS:kafka.versioned-demo.svc.cluster.local:9092}
+          auto-create-topics: true
+          replication-factor: 1
+          min-partition-count: 1
+        bindings:
+          route-in-0:
+            consumer:
+              configuration:
+                key.deserializer: org.apache.kafka.common.serialization.StringDeserializer
+                value.deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+        routing.latency: true
+  prometheus:
+    metrics:
+      export:
+        enabled: true

@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Shared data types for the package-routing domain.
+
+  This file is a pure "types-only" DMN model — no inputData, no
+  decisions, no decision tables. It exists so that service-specific
+  DMN files (currently: package-routing.dmn) can reference these
+  itemDefinitions via a DMN 1.5 <import>, which in turn drives the
+  VS Code Kogito "Data Types" tab to show the shared types under a
+  `commons.` prefix (e.g. commons.PackageRoute, commons.Document).
+
+  Workflow: POs edit the shared types here once; every importing
+  service sees the update at its next DMN re-parse.
+
+  Non-DMN services would regenerate Java POJOs from the same source
+  in a CI step (future Phase 3 candidate — not implemented).
+
+  Notes on field coverage:
+    * `Document` here mirrors the Java record at
+      lowcode-scf/src/main/java/com/demo/enricher/Document.java.
+      The `tags` and `metadata` fields of that record are intentionally
+      NOT modelled — DMN does not cleanly express the v2-vs-v3 shape
+      divergence of `tags` (List<String> vs List<Map<String,Object>>),
+      and Jackson-ignored `metadata` is untyped by design.
+    * `EnrichedDocument` is authored as a flat itemDefinition that
+      repeats the Document fields plus the enrichment suffix. The
+      itemComponents for the base fields reference the same atomic
+      FEEL types as `Document` so the "is-a" relationship stays
+      obvious in the editor's data-types tab. (DMN 1.5 does not
+      support true itemDefinition inheritance.)
+
+  DMNDI: the editor requires a <dmndi:DMNDI> block to avoid the
+  "Empty Diagram" prompt. Since this file has no DRD nodes we ship
+  an empty DMNDiagram — the editor treats that as a valid DRG for a
+  types-only file.
+-->
+<definitions xmlns="https://www.omg.org/spec/DMN/20230324/MODEL/"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20230324/DMNDI/"
+             xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             xmlns:feel="https://www.omg.org/spec/DMN/20230324/FEEL/"
+             xmlns:kie="https://kie.org/dmn/extensions/1.0"
+             id="_commons-types"
+             name="commons-types"
+             namespace="https://demo.com/dmn/commons-types"
+             exporter="hand-authored"
+             exporterVersion="1.0">
+
+    <description>Shared data types for the package-routing domain. This is a types-only DMN file — no DRD nodes by design. Open the "Data Types" tab to view or edit the shared itemDefinitions (Document, EnrichedDocument, PackageRoute).</description>
+
+    <!-- ================================================================= -->
+    <!-- Document — inbound payload type, mirrors the Java record at        -->
+    <!-- lowcode-scf/src/main/java/com/demo/enricher/Document.java.         -->
+    <!-- `tags` and `metadata` are intentionally omitted (see file header). -->
+    <!-- ================================================================= -->
+
+    <itemDefinition id="id_Document" name="Document">
+        <itemComponent id="ic_Document_id" name="id">
+            <typeRef>number</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_Document_schemaVersion" name="schemaVersion">
+            <typeRef>number</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_Document_title" name="title">
+            <typeRef>string</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_Document_body" name="body">
+            <typeRef>string</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_Document_createdAt" name="createdAt">
+            <typeRef>string</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_Document_correlationId" name="correlationId">
+            <typeRef>string</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_Document_author" name="author">
+            <typeRef>string</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_Document_priority" name="priority">
+            <typeRef>string</typeRef>
+            <allowedValues id="av_Document_priority">
+                <text>"HIGH","NORMAL","LOW"</text>
+            </allowedValues>
+        </itemComponent>
+    </itemDefinition>
+
+    <!-- ================================================================= -->
+    <!-- EnrichedDocument — Document + enrichment suffix. DMN 1.5 does not  -->
+    <!-- support itemDefinition inheritance so we repeat the base fields,   -->
+    <!-- keeping typeRefs aligned with Document by hand.                    -->
+    <!-- ================================================================= -->
+
+    <itemDefinition id="id_EnrichedDocument" name="EnrichedDocument">
+        <itemComponent id="ic_EnrichedDocument_id" name="id">
+            <typeRef>number</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_EnrichedDocument_schemaVersion" name="schemaVersion">
+            <typeRef>number</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_EnrichedDocument_title" name="title">
+            <typeRef>string</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_EnrichedDocument_body" name="body">
+            <typeRef>string</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_EnrichedDocument_createdAt" name="createdAt">
+            <typeRef>string</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_EnrichedDocument_correlationId" name="correlationId">
+            <typeRef>string</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_EnrichedDocument_author" name="author">
+            <typeRef>string</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_EnrichedDocument_priority" name="priority">
+            <typeRef>string</typeRef>
+            <allowedValues id="av_EnrichedDocument_priority">
+                <text>"HIGH","NORMAL","LOW"</text>
+            </allowedValues>
+        </itemComponent>
+        <itemComponent id="ic_EnrichedDocument_qualityScore" name="qualityScore">
+            <typeRef>number</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_EnrichedDocument_inspectionGrade" name="inspectionGrade">
+            <typeRef>string</typeRef>
+            <allowedValues id="av_EnrichedDocument_inspectionGrade">
+                <text>"A","B","C"</text>
+            </allowedValues>
+        </itemComponent>
+        <itemComponent id="ic_EnrichedDocument_processedBy" name="processedBy">
+            <typeRef>string</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_EnrichedDocument_enrichedAt" name="enrichedAt">
+            <typeRef>string</typeRef>
+        </itemComponent>
+    </itemDefinition>
+
+    <!-- ================================================================= -->
+    <!-- PackageRoute — output of the package-routing decision.             -->
+    <!-- Same shape as the former local `packageRouteResult` itemDefinition -->
+    <!-- that used to live in package-routing.dmn.                          -->
+    <!-- ================================================================= -->
+
+    <itemDefinition id="id_PackageRoute" name="PackageRoute">
+        <itemComponent id="ic_PackageRoute_outputTopic" name="outputTopic">
+            <typeRef>string</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_PackageRoute_slaMinutes" name="slaMinutes">
+            <typeRef>number</typeRef>
+        </itemComponent>
+        <itemComponent id="ic_PackageRoute_routingReason" name="routingReason">
+            <typeRef>string</typeRef>
+        </itemComponent>
+    </itemDefinition>
+
+    <!-- ================================================================= -->
+    <!-- Empty DMNDI — types-only file, no DRD nodes to shape. The VS Code  -->
+    <!-- Kogito editor still needs the element to skip the "Empty Diagram"  -->
+    <!-- prompt (same rule discovered for package-routing.dmn).             -->
+    <!-- ================================================================= -->
+    <dmndi:DMNDI>
+        <dmndi:DMNDiagram id="dmndiagram_commons-types" name="DRG"/>
+    </dmndi:DMNDI>
+
+</definitions>

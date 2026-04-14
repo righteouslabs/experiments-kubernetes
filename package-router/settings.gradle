@@ -1,0 +1,11 @@
+rootProject.name = 'package-router'
+
+// Composite build — share the commons-observability library with the
+// sibling document-enricher service. Substitutes the external coordinate
+// "com.demo:commons-observability" with the live project so edits under
+// ../commons-observability/ are picked up without a publish step.
+includeBuild('../commons-observability') {
+    dependencySubstitution {
+        substitute module('com.demo:commons-observability') using project(':')
+    }
+}

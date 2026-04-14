@@ -1,0 +1,13 @@
+{
+  "documentId": "doc-12345",
+  "correlationId": "c-9e7f-1a88-4cd2-bd3a-002d4f10ab55",
+  "outputTopic": "packages.express",
+  "slaMinutes": 5,
+  "routingReason": "Top priority + top grade",
+  "decisionsFired": [1],
+  "inputs": {
+    "priority": "HIGH",
+    "bodyLength": 412,
+    "enrichmentGrade": "A"
+  }
+}

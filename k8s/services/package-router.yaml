@@ -1,0 +1,98 @@
+##
+## Package Router (low-code stage, Phase 2).
+##
+## Consumes from `documents.enriched` (produced by document-enricher) and
+## evaluates a Kogito DMN decision table to route each message to one of
+## four output topics: packages.{express,standard,bulk,quarantine}.
+##
+## The DMN file IS the business logic; this pod is just the carrier.
+##
+## Exposes:
+##   - :8080/actuator/prometheus  (scraped by host-side Prometheus via NodePort 30503)
+##   - :8080/actuator/health
+##   - :8080/recent               (dashboard polls for the last 20 routings)
+##   - :8080/servicecard.json     (dashboard /service-card/package-router consumes this)
+##
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: package-router
+  namespace: versioned-demo
+  labels:
+    app: package-router
+    stage: low-code
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: package-router
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: package-router
+        stage: low-code
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: router
+          image: docker.io/library/package-router:latest
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: KAFKA_BROKERS
+              value: "kafka.versioned-demo.svc.cluster.local:9092"
+            - name: MONGODB_URI
+              value: "mongodb://mongodb.versioned-demo.svc.cluster.local:27017/documentsdb"
+            - name: SPRING_APPLICATION_NAME
+              value: "package-router"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx384m -Xms192m"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 90
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: package-router
+  namespace: versioned-demo
+  labels:
+    app: package-router
+spec:
+  type: NodePort
+  selector:
+    app: package-router
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30503

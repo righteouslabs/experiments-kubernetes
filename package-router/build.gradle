@@ -1,0 +1,66 @@
+plugins {
+    id 'org.springframework.boot' version '3.4.4'
+    id 'io.spring.dependency-management' version '1.1.6'
+    id 'java'
+}
+
+group = 'com.demo'
+version = '1.0.0'
+sourceCompatibility = '17'
+
+repositories {
+    mavenCentral()
+}
+
+ext {
+    set('springCloudVersion', '2024.0.0')
+    // Apache KIE / Drools 9.44.0.Final publishes the full DMN 1.5 runtime
+    // under `org.kie:kie-dmn-core`. The Kogito-branded Spring Boot starter
+    // for 10.x is not yet on Maven Central (only BOM + parent POM are), so
+    // we wire the Apache KIE runtime directly — it is the exact same
+    // org.kie.dmn.* API under the hood, just without the Kogito
+    // autoconfiguration layer. One @Bean in DmnRuntimeConfig handles that.
+    set('kieDmnVersion', '9.44.0.Final')
+}
+
+dependencies {
+    // --- Spring Cloud Stream: Kafka in, dynamic Kafka out ---------------
+    implementation 'org.springframework.cloud:spring-cloud-starter-function-web'
+    implementation 'org.springframework.cloud:spring-cloud-stream'
+    implementation 'org.springframework.cloud:spring-cloud-stream-binder-kafka'
+
+    // --- Apache KIE DMN runtime (DMN 1.5) -------------------------------
+    // kie-dmn-core brings the entire org.kie.dmn.api.core surface —
+    // DMNRuntime, DMNModel, DMNContext, DMNResult, the listener SPI, and
+    // the FEEL evaluator. Matches the DMN 1.5 XML schema we authored.
+    implementation "org.kie:kie-dmn-core:${kieDmnVersion}"
+
+    // --- Observability + metrics ----------------------------------------
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'io.micrometer:micrometer-registry-prometheus'
+    implementation 'org.springframework.boot:spring-boot-starter-aop'
+
+    // Shared observability kit (@MeterEvent / @BusinessRule / ProcessContext).
+    implementation 'com.demo:commons-observability:1.0.0'
+
+    // --- Audit store: Spring Data MongoDB -------------------------------
+    // Writes per-decision audit records to MongoDB's `audit` collection;
+    // see DmnAuditListener + AuditLedger.
+    implementation 'org.springframework.boot:spring-boot-starter-data-mongodb'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+dependencyManagement {
+    imports {
+        mavenBom "org.springframework.cloud:spring-cloud-dependencies:${springCloudVersion}"
+    }
+}
+
+bootJar {
+    archiveFileName = 'app.jar'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

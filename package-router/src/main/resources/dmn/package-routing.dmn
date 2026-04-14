@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Package routing decision table — the source of truth for how the
+  package-router distributes enriched documents across four output
+  topics.
+
+  Authored in DMN 1.5 (OMG schema 20230324). Product-owners edit this
+  file directly in VS Code (Red Hat DMN Editor extension) or in the
+  on-line sandbox at https://sandbox.kie.org. The package-router loads
+  it at boot via the Kogito DMN Spring Boot starter.
+-->
+<definitions xmlns="https://www.omg.org/spec/DMN/20230324/MODEL/"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20230324/DMNDI/"
+             xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             xmlns:feel="https://www.omg.org/spec/DMN/20230324/FEEL/"
+             xmlns:kie="https://kie.org/dmn/extensions/1.0"
+             id="_package-routing"
+             name="package-routing"
+             namespace="https://demo.com/dmn/package-routing"
+             exporter="hand-authored"
+             exporterVersion="1.0">
+
+    <description>Routes every enriched document to one of four output topics based on priority, bodyLength and enrichmentGrade. FIRST-hit policy: the top-most matching row wins and the quarantine fallback catches anything unmatched. Product Owners edit this file directly — in VS Code (Red Hat DMN Editor) or sandbox.kie.org — and the live package-router reloads the decision table at boot.</description>
+
+    <!-- ================================================================= -->
+    <!-- Imports                                                           -->
+    <!--                                                                   -->
+    <!-- commons-types.dmn carries the shared data types (Document,        -->
+    <!-- EnrichedDocument, PackageRoute) used across the package-routing   -->
+    <!-- domain. `locationURI` is sibling-relative (bare filename) — the   -->
+    <!-- same rule we established for scesim <dmnFilePath>.                -->
+    <!--                                                                   -->
+    <!-- How KIE 10.1 VS Code DMN editor resolves imports (verified by     -->
+    <!-- reading apache/incubator-kie-tools @ tag 10.1.0):                 -->
+    <!--                                                                   -->
+    <!--   packages/dmn-editor-envelope/src/DmnEditorRoot.tsx              -->
+    <!--   ExternalModelsManager effect (lines ~619-718):                  -->
+    <!--     1. Workspace glob: `**/*.{dmn,pmml}` (TRAVERSAL) excluding    -->
+    <!--        the open file and any path containing `target/classes/`.  -->
+    <!--     2. For each candidate, read the root `namespace="..."`       -->
+    <!--        attribute via DOMParser.                                   -->
+    <!--     3. If that namespace matches one the open file imports, run  -->
+    <!--        `getMarshaller(content,{upgradeTo:"latest"}).parser.parse`-->
+    <!--        and add it to `externalModelsByNamespace`.                -->
+    <!--     4. `locationURI` is NOT used for discovery — only for the    -->
+    <!--        "jump to file" link on the Included Models card.          -->
+    <!--                                                                   -->
+    <!--   packages/dmn-editor/src/includedModels/importNamespaces.ts:    -->
+    <!--   `getNamespaceOfDmnImport` returns `dmnImport["@_namespace"]`   -->
+    <!--   unconditionally for DMN imports; the `@_importType` URI only   -->
+    <!--   needs to be in `allDmnImportNamespaces` (DMN 1.0..1.5 in 10.1).-->
+    <!--                                                                   -->
+    <!-- importType MUST match a URI recognised by the running Drools/    -->
+    <!-- Kogito DMN runtime. Our pinned kie-dmn-core 9.44.x accepts       -->
+    <!-- DMN URIs 1.1..1.4 (see                                            -->
+    <!-- apache/incubator-kie-drools@9.44.x                                -->
+    <!-- kie-dmn/kie-dmn-core/src/main/java/org/kie/dmn/core/compiler/    -->
+    <!-- ImportDMNResolverUtil.java::whichImportType). The VS Code editor -->
+    <!-- accepts 1.0..1.5. DMN 1.4 (20211108) is therefore the only URI   -->
+    <!-- in the intersection that keeps both happy while the <definitions>-->
+    <!-- body stays on DMN 1.5 (20230324) for editor compatibility.       -->
+    <!-- ================================================================= -->
+    <import namespace="https://demo.com/dmn/commons-types"
+            locationURI="commons-types.dmn"
+            importType="https://www.omg.org/spec/DMN/20211108/MODEL/"
+            name="commons"/>
+
+    <!-- ================================================================= -->
+    <!-- Inputs                                                            -->
+    <!-- ================================================================= -->
+
+    <inputData id="input_priority" name="priority">
+        <variable id="var_priority" name="priority" typeRef="string"/>
+    </inputData>
+
+    <inputData id="input_bodyLength" name="bodyLength">
+        <variable id="var_bodyLength" name="bodyLength" typeRef="number"/>
+    </inputData>
+
+    <inputData id="input_enrichmentGrade" name="enrichmentGrade">
+        <variable id="var_enrichmentGrade" name="enrichmentGrade" typeRef="string"/>
+    </inputData>
+
+    <!-- ================================================================= -->
+    <!-- The decision itself — one decision table, FIRST hit policy.       -->
+    <!-- ================================================================= -->
+
+    <decision id="decision_packageRoute" name="packageRoute">
+        <variable id="var_packageRoute" name="packageRoute" typeRef="commons.PackageRoute"/>
+
+        <informationRequirement id="ir_priority">
+            <requiredInput href="#input_priority"/>
+        </informationRequirement>
+        <informationRequirement id="ir_bodyLength">
+            <requiredInput href="#input_bodyLength"/>
+        </informationRequirement>
+        <informationRequirement id="ir_enrichmentGrade">
+            <requiredInput href="#input_enrichmentGrade"/>
+        </informationRequirement>
+
+        <decisionTable id="dt_packageRoute" hitPolicy="FIRST" outputLabel="packageRoute">
+
+            <!-- Inputs -->
+            <input id="in_priority" label="priority">
+                <inputExpression typeRef="string">
+                    <text>priority</text>
+                </inputExpression>
+            </input>
+            <input id="in_bodyLength" label="bodyLength">
+                <inputExpression typeRef="number">
+                    <text>bodyLength</text>
+                </inputExpression>
+            </input>
+            <input id="in_enrichmentGrade" label="enrichmentGrade">
+                <inputExpression typeRef="string">
+                    <text>enrichmentGrade</text>
+                </inputExpression>
+            </input>
+
+            <!-- Outputs -->
+            <output id="out_outputTopic" name="outputTopic" typeRef="string"/>
+            <output id="out_slaMinutes" name="slaMinutes" typeRef="number"/>
+            <output id="out_routingReason" name="routingReason" typeRef="string"/>
+
+            <!-- Rule 1 — HIGH + any body + grade A -> express, 5 min  -->
+            <rule id="rule_1">
+                <inputEntry><text>"HIGH"</text></inputEntry>
+                <inputEntry><text>-</text></inputEntry>
+                <inputEntry><text>"A"</text></inputEntry>
+                <outputEntry><text>"packages.express"</text></outputEntry>
+                <outputEntry><text>5</text></outputEntry>
+                <outputEntry><text>"Top priority + top grade"</text></outputEntry>
+            </rule>
+
+            <!-- Rule 2 — HIGH + body > 500 + grade B or C -> express, 10 min -->
+            <rule id="rule_2">
+                <inputEntry><text>"HIGH"</text></inputEntry>
+                <inputEntry><text>&gt; 500</text></inputEntry>
+                <inputEntry><text>"B","C"</text></inputEntry>
+                <outputEntry><text>"packages.express"</text></outputEntry>
+                <outputEntry><text>10</text></outputEntry>
+                <outputEntry><text>"High priority with substantial payload"</text></outputEntry>
+            </rule>
+
+            <!-- Rule 3 — NORMAL + body < 200 + grade A or B -> standard, 30 min -->
+            <rule id="rule_3">
+                <inputEntry><text>"NORMAL"</text></inputEntry>
+                <inputEntry><text>&lt; 200</text></inputEntry>
+                <inputEntry><text>"A","B"</text></inputEntry>
+                <outputEntry><text>"packages.standard"</text></outputEntry>
+                <outputEntry><text>30</text></outputEntry>
+                <outputEntry><text>"Standard flow"</text></outputEntry>
+            </rule>
+
+            <!-- Rule 4 — NORMAL + body >= 200 + grade A, B, C -> bulk, 60 min -->
+            <rule id="rule_4">
+                <inputEntry><text>"NORMAL"</text></inputEntry>
+                <inputEntry><text>&gt;= 200</text></inputEntry>
+                <inputEntry><text>"A","B","C"</text></inputEntry>
+                <outputEntry><text>"packages.bulk"</text></outputEntry>
+                <outputEntry><text>60</text></outputEntry>
+                <outputEntry><text>"Bulk routing for larger payloads"</text></outputEntry>
+            </rule>
+
+            <!-- Rule 5 — LOW + any + any grade -> bulk, 240 min -->
+            <rule id="rule_5">
+                <inputEntry><text>"LOW"</text></inputEntry>
+                <inputEntry><text>-</text></inputEntry>
+                <inputEntry><text>"A","B","C"</text></inputEntry>
+                <outputEntry><text>"packages.bulk"</text></outputEntry>
+                <outputEntry><text>240</text></outputEntry>
+                <outputEntry><text>"Low priority - batched"</text></outputEntry>
+            </rule>
+
+            <!-- Rule 6 — fallback -> quarantine -->
+            <rule id="rule_6">
+                <inputEntry><text>-</text></inputEntry>
+                <inputEntry><text>-</text></inputEntry>
+                <inputEntry><text>-</text></inputEntry>
+                <outputEntry><text>"packages.quarantine"</text></outputEntry>
+                <outputEntry><text>null</text></outputEntry>
+                <outputEntry><text>"Fallback - needs review"</text></outputEntry>
+            </rule>
+
+        </decisionTable>
+    </decision>
+
+    <!-- ================================================================= -->
+    <!-- Item definitions                                                  -->
+    <!--                                                                   -->
+    <!-- NOTE: the local `packageRouteResult` itemDefinition has been      -->
+    <!-- removed — the decision output type now resolves to                -->
+    <!-- commons.PackageRoute via the <import> at the top of this file.    -->
+    <!-- Shared types live in commons-types.dmn so every service that      -->
+    <!-- consumes PackageRoute sees the same shape.                        -->
+    <!-- ================================================================= -->
+
+    <!-- ================================================================= -->
+    <!-- Diagram layout — inputs stacked on the left, decision on the      -->
+    <!-- right. Required by the VS Code DMN Editor (KIE 10.1) so the       -->
+    <!-- file does not open with the "Empty Diagram" prompt.               -->
+    <!-- ================================================================= -->
+    <dmndi:DMNDI>
+        <dmndi:DMNDiagram id="dmndiagram_package-routing" name="DRG">
+            <dmndi:DMNShape id="dmnshape_input_priority" dmnElementRef="input_priority" isCollapsed="false">
+                <dc:Bounds x="100" y="100" width="150" height="50"/>
+                <dmndi:DMNLabel/>
+            </dmndi:DMNShape>
+            <dmndi:DMNShape id="dmnshape_input_bodyLength" dmnElementRef="input_bodyLength" isCollapsed="false">
+                <dc:Bounds x="100" y="250" width="150" height="50"/>
+                <dmndi:DMNLabel/>
+            </dmndi:DMNShape>
+            <dmndi:DMNShape id="dmnshape_input_enrichmentGrade" dmnElementRef="input_enrichmentGrade" isCollapsed="false">
+                <dc:Bounds x="100" y="400" width="150" height="50"/>
+                <dmndi:DMNLabel/>
+            </dmndi:DMNShape>
+            <dmndi:DMNShape id="dmnshape_decision_packageRoute" dmnElementRef="decision_packageRoute" isCollapsed="false">
+                <dc:Bounds x="400" y="250" width="180" height="80"/>
+                <dmndi:DMNLabel/>
+            </dmndi:DMNShape>
+            <dmndi:DMNEdge id="dmnedge_ir_priority" dmnElementRef="ir_priority">
+                <di:waypoint x="250" y="125"/>
+                <di:waypoint x="400" y="290"/>
+            </dmndi:DMNEdge>
+            <dmndi:DMNEdge id="dmnedge_ir_bodyLength" dmnElementRef="ir_bodyLength">
+                <di:waypoint x="250" y="275"/>
+                <di:waypoint x="400" y="290"/>
+            </dmndi:DMNEdge>
+            <dmndi:DMNEdge id="dmnedge_ir_enrichmentGrade" dmnElementRef="ir_enrichmentGrade">
+                <di:waypoint x="250" y="425"/>
+                <di:waypoint x="400" y="290"/>
+            </dmndi:DMNEdge>
+        </dmndi:DMNDiagram>
+    </dmndi:DMNDI>
+
+</definitions>
