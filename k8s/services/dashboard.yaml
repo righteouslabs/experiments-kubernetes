@@ -37,6 +37,10 @@ spec:
               value: "http://consumer.versioned-demo.svc.cluster.local:8080"
             - name: PRODUCER_URL
               value: "http://producer.versioned-demo.svc.cluster.local:8080"
+            - name: ENRICHER_URL
+              value: "http://document-enricher.versioned-demo.svc.cluster.local:8080"
+            - name: ROUTER_URL
+              value: "http://package-router.versioned-demo.svc.cluster.local:8080"
             - name: SCHEMA_REGISTRY_URL
               value: "http://schema-registry.versioned-demo.svc.cluster.local:8081"
           resources:

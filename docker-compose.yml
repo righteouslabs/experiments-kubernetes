@@ -35,6 +35,8 @@ services:
       - "6443:6443"
       - "9000:9000"
       - "30501:30501"   # NodePort for dashboard (http://localhost:30501)
+      - "30502:30502"   # NodePort for document-enricher actuator (low-code stage)
+      - "30503:30503"   # NodePort for package-router actuator (low-code stage, Phase 2)
 
   # =========================================================================
   # Phase 1: Build custom Java images and load into MicroShift's CRI-O
@@ -48,9 +50,13 @@ services:
         condition: service_healthy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./producer:/workspace/producer:ro
-      - ./consumer-service:/workspace/consumer-service:ro
-      - ./dashboard:/workspace/dashboard:ro
+      # Mount the entire repo root so the low-code services (which pull in
+      # ../commons-observability via Gradle composite build) have access to
+      # their sibling library at build time. Individual services still live
+      # under their subdirectories.
+      - ./:/workspace/repo:ro
+      # Writable dashboard dir so we can stage AsyncAPI assets before build.
+      - ./dashboard:/workspace/dashboard
     entrypoint: /bin/sh
     command:
       - -c
@@ -63,11 +69,29 @@ services:
 
         echo ""
         echo "--- Building document-producer ---"
-        docker build -t document-producer:latest /workspace/producer
+        docker build -t document-producer:latest /workspace/repo/producer
 
         echo ""
         echo "--- Building document-consumer ---"
-        docker build -t document-consumer:latest /workspace/consumer-service
+        docker build -t document-consumer:latest /workspace/repo/consumer-service
+
+        echo ""
+        echo "--- Building document-enricher (low-code SCF stage) ---"
+        docker build -t document-enricher:latest \
+          -f /workspace/repo/lowcode-scf/Dockerfile /workspace/repo
+
+        echo ""
+        echo "--- Building package-router (low-code DMN stage, Phase 2) ---"
+        docker build -t package-router:latest \
+          -f /workspace/repo/package-router/Dockerfile /workspace/repo
+
+        echo ""
+        echo "--- Staging AsyncAPI spec into dashboard build context ---"
+        mkdir -p /workspace/dashboard/lowcode
+        cp /workspace/repo/lowcode-scf/asyncapi.yaml /workspace/dashboard/lowcode/asyncapi.yaml
+        if [ -d /workspace/repo/lowcode-scf/public ]; then
+          cp -r /workspace/repo/lowcode-scf/public /workspace/dashboard/lowcode/public
+        fi
 
         echo ""
         echo "--- Building dashboard ---"
@@ -88,6 +112,8 @@ services:
         for img in \
             document-producer:latest \
             document-consumer:latest \
+            document-enricher:latest \
+            package-router:latest \
             demo-dashboard:latest \
             confluentinc/cp-zookeeper:7.5.0 \
             confluentinc/cp-kafka:7.5.0 \
@@ -102,7 +128,7 @@ services:
 
         echo ""
         echo "--- Verifying images in MicroShift ---"
-        docker exec microshift crictl images | grep -E "document|confluent|mongo|dapr|kafka-ui"
+        docker exec microshift crictl images | grep -E "document|package|confluent|mongo|dapr|kafka-ui"
 
         echo ""
         echo "Phase 1 complete."
@@ -134,7 +160,7 @@ services:
 
         # Wait for the API server to be fully responsive (not just kubeconfig file existing)
         echo ""
-        echo "[0/6] Waiting for API server..."
+        echo "[0/8] Waiting for API server..."
         for i in $$(seq 1 30); do
             if kubectl get nodes >/dev/null 2>&1; then
                 echo "API server ready."
@@ -147,7 +173,7 @@ services:
 
         # --- Namespace (with permissive pod security for demo) ---
         echo ""
-        echo "[1/6] Creating namespace and configuring security..."
+        echo "[1/8] Creating namespace and configuring security..."
         kubectl apply -f /k8s/namespace.yaml
         kubectl label namespace versioned-demo \
           pod-security.kubernetes.io/enforce=privileged \
@@ -167,12 +193,12 @@ services:
 
         # --- Dapr placement service + component ConfigMap ---
         echo ""
-        echo "[2/6] Deploying Dapr placement service..."
+        echo "[2/8] Deploying Dapr placement service..."
         kubectl apply -f /k8s/dapr/
 
         # --- Infrastructure (Kafka + ZooKeeper + Schema Registry + MongoDB) ---
         echo ""
-        echo "[3/6] Deploying infrastructure..."
+        echo "[3/8] Deploying infrastructure..."
         kubectl apply -f /k8s/infrastructure/
 
         echo "Waiting for ZooKeeper..."
@@ -191,25 +217,49 @@ services:
 
         # --- Producer ---
         echo ""
-        echo "[4/6] Deploying producer..."
+        echo "[4/8] Deploying producer..."
         kubectl apply -f /k8s/services/producer.yaml
 
         # --- Consumer (handles all schema versions) ---
         echo ""
-        echo "[5/7] Deploying consumer (handles all schema versions)..."
+        echo "[5/8] Deploying consumer (handles all schema versions)..."
         kubectl apply -f /k8s/services/consumer.yaml
+
+        # --- Document Enricher (low-code SCF stage) ---
+        echo ""
+        echo "[6/9] Installing KEDA (best-effort) and deploying document-enricher..."
+        if ! kubectl get crd scaledobjects.keda.sh >/dev/null 2>&1; then
+            echo "KEDA CRDs not found, attempting install..."
+            kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.14.0/keda-2.14.0.yaml || \
+                echo "WARNING: KEDA install failed. ScaledObject will be skipped, Deployment continues."
+        else
+            echo "KEDA already installed."
+        fi
+        # Apply Deployment+Service first (always succeeds), then ScaledObject (tolerated)
+        kubectl apply -f /k8s/services/document-enricher.yaml || true
+        if ! kubectl get crd scaledobjects.keda.sh >/dev/null 2>&1; then
+            echo "Skipping ScaledObject (KEDA CRDs unavailable)."
+        fi
+
+        # --- Package Router (low-code DMN stage, Phase 2) ---
+        echo ""
+        echo "[7/9] Deploying package-router (DMN decision-table stage)..."
+        kubectl apply -f /k8s/services/package-router.yaml
 
         # --- Dashboard ---
         echo ""
-        echo "[6/7] Deploying dashboard..."
+        echo "[8/9] Deploying dashboard..."
         kubectl apply -f /k8s/services/dashboard.yaml
 
         # --- Wait for everything ---
         echo ""
-        echo "[7/7] Waiting for all services to be ready..."
-        kubectl -n versioned-demo wait --for=condition=available deployment/producer     --timeout=300s
-        kubectl -n versioned-demo wait --for=condition=available deployment/consumer      --timeout=300s
-        kubectl -n versioned-demo wait --for=condition=available deployment/dashboard    --timeout=300s
+        echo "[9/9] Waiting for all services to be ready..."
+        kubectl -n versioned-demo wait --for=condition=available deployment/producer          --timeout=300s
+        kubectl -n versioned-demo wait --for=condition=available deployment/consumer          --timeout=300s
+        kubectl -n versioned-demo wait --for=condition=available deployment/document-enricher --timeout=300s || true
+        # Kogito needs a little longer to warm up than plain Spring Cloud Function.
+        kubectl -n versioned-demo wait --for=condition=available deployment/package-router    --timeout=420s || true
+        kubectl -n versioned-demo wait --for=condition=available deployment/dashboard         --timeout=300s
 
         echo ""
         echo "============================================"
@@ -222,3 +272,44 @@ services:
         echo "  export KUBECONFIG=\$$(pwd)/microshift-docker-compose/kubeconfig"
         echo "  kubectl -n versioned-demo logs -l app=producer -f"
         echo "  kubectl -n versioned-demo logs -l app=consumer -f"
+        echo "  kubectl -n versioned-demo logs -l app=document-enricher -f"
+
+  # =========================================================================
+  # Low-code stage observability: Prometheus + Grafana as plain Docker
+  # services. They scrape the document-enricher via MicroShift's NodePort
+  # 30502 (the microshift container hostname resolves on the shared network).
+  # =========================================================================
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: demo-prometheus
+    depends_on:
+      microshift:
+        condition: service_healthy
+    ports:
+      - "9091:9090"   # host 9091 -> container 9090 (avoids conflicts on 9090)
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2h
+      - --web.enable-lifecycle
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: demo-grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_DEFAULT_THEME=light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/provisioning/dashboards:/var/lib/grafana/dashboards:ro
+    restart: unless-stopped
