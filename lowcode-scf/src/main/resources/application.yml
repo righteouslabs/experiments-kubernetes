@@ -1,0 +1,91 @@
+server:
+  port: 8080
+
+service-card:
+  purpose: >-
+    Computes a quality score for every document on the `documents` Kafka
+    topic and republishes the enriched record to `documents.enriched`.
+    Deterministic scoring from body length, tag presence and priority;
+    grade A/B/C is derived from the final score.
+
+# commons-observability toggles. Everything is on by default; flip to
+# false to quiesce a specific event's metric or structured log without
+# touching the code. Tag allow-lists cap cardinality — any tag value
+# outside the allow-list is recorded as "OTHER".
+observability:
+  enrichment:
+    document-enriched:
+      metric:
+        enabled: true
+      log:
+        enabled: true
+  tags:
+    grade:
+      allow: A,B,C
+    schemaversion:
+      allow: "0,1,2,3"
+    priority:
+      allow: HIGH,MEDIUM,LOW
+
+spring:
+  application:
+    name: document-enricher
+
+  cloud:
+    function:
+      definition: enrich
+    stream:
+      bindings:
+        enrich-in-0:
+          destination: documents
+          group: document-enricher
+          content-type: application/json
+          consumer:
+            max-attempts: 3
+        enrich-out-0:
+          destination: documents.enriched
+          content-type: application/json
+      kafka:
+        binder:
+          brokers: ${KAFKA_BROKERS:kafka.versioned-demo.svc.cluster.local:9092}
+          auto-create-topics: true
+          replication-factor: 1
+          min-partition-count: 1
+        bindings:
+          enrich-in-0:
+            consumer:
+              configuration:
+                key.deserializer: org.apache.kafka.common.serialization.StringDeserializer
+                # ByteArrayDeserializer lets SCS's message converter do the
+                # JSON -> Document conversion through our custom
+                # CloudEventUnwrappingDeserializer (which transparently
+                # strips the Dapr-CE envelope when present).
+                value.deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+          enrich-out-0:
+            producer:
+              configuration:
+                key.serializer: org.apache.kafka.common.serialization.StringSerializer
+                # SCS's content-type=application/json handles JSON encoding via
+                # its message converter; emit raw JSON bytes so downstream
+                # readers (kafka-console-consumer, other services) see plain
+                # UTF-8 JSON rather than a base64-encoded string wrapper.
+                value.serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+        enrichment.latency: true
+  prometheus:
+    metrics:
+      export:
+        enabled: true

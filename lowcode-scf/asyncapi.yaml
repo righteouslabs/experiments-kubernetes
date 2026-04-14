@@ -1,0 +1,138 @@
+asyncapi: 3.0.0
+info:
+  title: Document Enricher (Low-Code Quality Inspection Stage)
+  version: 1.0.0
+  description: |
+    Consumes raw production-line document records from the `documents` Kafka
+    topic, computes a deterministic quality score, and republishes the
+    enriched record to `documents.enriched`.
+
+    This spec is the **source of truth** for the contract. A developer writes
+    only the `Function<Document, EnrichedDocument>` body; the Spring Cloud
+    Stream Kafka binder handles I/O, serialization, retries, consumer
+    groups, and delivery guarantees.
+
+defaultContentType: application/json
+
+servers:
+  kafka:
+    host: kafka.versioned-demo.svc.cluster.local:9092
+    protocol: kafka
+    description: In-cluster Kafka broker
+
+channels:
+  documents:
+    address: documents
+    description: Raw production-line document records, any schema version.
+    messages:
+      document:
+        $ref: '#/components/messages/Document'
+
+  documentsEnriched:
+    address: documents.enriched
+    description: Enriched documents with quality score and inspection grade.
+    messages:
+      enrichedDocument:
+        $ref: '#/components/messages/EnrichedDocument'
+
+operations:
+  receiveDocument:
+    action: receive
+    channel:
+      $ref: '#/channels/documents'
+    summary: Consume a raw document and hand it to the enrich() function.
+    messages:
+      - $ref: '#/channels/documents/messages/document'
+
+  publishEnrichedDocument:
+    action: send
+    channel:
+      $ref: '#/channels/documentsEnriched'
+    summary: Publish the enriched document with quality score.
+    messages:
+      - $ref: '#/channels/documentsEnriched/messages/enrichedDocument'
+
+components:
+  messages:
+    Document:
+      name: Document
+      title: Inbound Production-Line Document
+      summary: Any-version document record with a common discriminator.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/Document'
+
+    EnrichedDocument:
+      name: EnrichedDocument
+      title: Enriched Document
+      summary: Inbound document annotated with qualityScore and inspectionGrade.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/EnrichedDocument'
+
+  schemas:
+    Document:
+      type: object
+      required: [id, schemaVersion, title, body, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        schemaVersion:
+          type: integer
+          enum: [1, 2, 3]
+        correlationId:
+          type: string
+          format: uuid
+        title:
+          type: string
+        body:
+          type: string
+        author:
+          type: string
+        tags:
+          description: >-
+            v2 = array of strings; v3 = array of weighted name/weight objects.
+          oneOf:
+            - type: array
+              items: { type: string }
+            - type: array
+              items:
+                type: object
+                properties:
+                  name: { type: string }
+                  weight: { type: number, minimum: 0, maximum: 1 }
+        priority:
+          type: string
+          enum: [HIGH, MEDIUM, LOW]
+        metadata:
+          type: object
+          properties:
+            source: { type: string }
+            region: { type: string }
+            correlationId: { type: string }
+        createdAt:
+          type: string
+          format: date-time
+
+    EnrichedDocument:
+      allOf:
+        - $ref: '#/components/schemas/Document'
+        - type: object
+          required: [qualityScore, inspectionGrade, processedBy, enrichedAt]
+          properties:
+            qualityScore:
+              type: integer
+              minimum: 0
+              maximum: 100
+              description: Computed from body length, tag presence and priority.
+            inspectionGrade:
+              type: string
+              enum: [A, B, C]
+              description: A if score>=75, B if >=50, else C.
+            processedBy:
+              type: string
+              const: document-enricher
+            enrichedAt:
+              type: string
+              format: date-time

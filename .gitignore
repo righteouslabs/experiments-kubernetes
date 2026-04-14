@@ -26,3 +26,15 @@ docker-compose.override.yml
 
 # Data volumes
 data/
+
+# Gradle
+.gradle/
+build/
+
+# AsyncAPI generated output (lowcode stage)
+lowcode-scf/public/
+
+# Dashboard build-time staging (copied in from lowcode-scf/ by image-builder)
+dashboard/lowcode/asyncapi.yaml
+dashboard/lowcode/public/
+

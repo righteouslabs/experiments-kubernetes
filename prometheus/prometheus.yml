@@ -1,0 +1,32 @@
+##
+## Prometheus scrape config for the low-code stage.
+##
+## The document-enricher pod is reached via MicroShift's host-side NodePort
+## (port 30502 on the microshift container). This prometheus container is
+## run in the same Docker compose stack as microshift, so it resolves the
+## sidecar container's hostname directly.
+##
+global:
+  scrape_interval: 10s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'document-enricher'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['microshift:30502']
+        labels:
+          service: document-enricher
+          stage: low-code
+
+  - job_name: 'package-router'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['microshift:30503']
+        labels:
+          service: package-router
+          stage: low-code
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

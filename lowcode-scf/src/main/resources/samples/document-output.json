@@ -1,0 +1,22 @@
+{
+  "id": "doc-12345",
+  "schemaVersion": 3,
+  "title": "Press-shop run report #12345",
+  "body": "Overnight press-shop run produced 412 units with two stamping-die rejects on the primary line. Tolerances held within spec. Shift lead flagged one coil-feed intermittent fault; root cause analysis pending.",
+  "correlationId": "c-9e7f-1a88-4cd2-bd3a-002d4f10ab55",
+  "author": "shift-lead-a",
+  "tags": [
+    { "name": "press-shop", "weight": 0.7 },
+    { "name": "shift-a",    "weight": 0.3 }
+  ],
+  "priority": "HIGH",
+  "metadata": {
+    "source": "line-12",
+    "region": "plant-east"
+  },
+  "createdAt": "2026-04-12T02:05:17Z",
+  "qualityScore": 87,
+  "inspectionGrade": "A",
+  "processedBy": "document-enricher",
+  "enrichedAt": "2026-04-12T02:05:17.421Z"
+}

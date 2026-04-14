@@ -1,0 +1,12 @@
+rootProject.name = 'document-enricher'
+
+// Pull in the shared commons-observability library via Gradle composite
+// build. The substitution below replaces the external coordinate
+// `com.demo:commons-observability` with the live sibling project, so
+// edits under ../commons-observability/ are picked up without publish.
+includeBuild('../commons-observability') {
+    dependencySubstitution {
+        substitute module('com.demo:commons-observability') using project(':')
+    }
+}
+

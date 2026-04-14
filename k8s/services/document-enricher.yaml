@@ -1,0 +1,125 @@
+##
+## Document Enricher (low-code stage).
+##
+## Consumes from `documents`, publishes to `documents.enriched` via the
+## Spring Cloud Stream Kafka binder. Single-Function Spring Cloud Function
+## service. No Dapr, no Knative — plain Deployment + Service with a KEDA
+## ScaledObject (if KEDA is installed) for lag-based autoscaling.
+##
+## Exposes:
+##   - :8080/actuator/prometheus  (scraped by the external Prometheus)
+##   - :8080/actuator/health
+##   - :8080/recent               (dashboard polls for the last 20 enrichments)
+##
+## NodePort 30502 lets the host-side Prometheus in docker-compose scrape it.
+##
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: document-enricher
+  namespace: versioned-demo
+  labels:
+    app: document-enricher
+    stage: low-code
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: document-enricher
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: document-enricher
+        stage: low-code
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: enricher
+          image: docker.io/library/document-enricher:latest
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: KAFKA_BROKERS
+              value: "kafka.versioned-demo.svc.cluster.local:9092"
+            - name: SPRING_APPLICATION_NAME
+              value: "document-enricher"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx384m -Xms128m"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: document-enricher
+  namespace: versioned-demo
+  labels:
+    app: document-enricher
+spec:
+  type: NodePort
+  selector:
+    app: document-enricher
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30502
+---
+##
+## KEDA ScaledObject — only takes effect if the `keda.sh/v1alpha1` CRD is
+## installed on the cluster. If KEDA is NOT present, kubectl will refuse
+## the object; the cluster-deploy step applies it with `|| true` so the
+## rest of the demo continues unaffected.
+##
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: document-enricher
+  namespace: versioned-demo
+  labels:
+    app: document-enricher
+spec:
+  scaleTargetRef:
+    name: document-enricher
+  pollingInterval: 15
+  cooldownPeriod: 60
+  minReplicaCount: 1
+  maxReplicaCount: 3
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: kafka.versioned-demo.svc.cluster.local:9092
+        consumerGroup: document-enricher
+        topic: documents
+        lagThreshold: "100"
+        offsetResetPolicy: latest

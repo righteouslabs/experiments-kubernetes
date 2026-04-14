@@ -1,0 +1,65 @@
+plugins {
+    id 'org.springframework.boot' version '3.4.4'
+    id 'io.spring.dependency-management' version '1.1.6'
+    id 'java'
+}
+
+group = 'com.demo'
+version = '1.0.0'
+sourceCompatibility = '17'
+
+repositories {
+    mavenCentral()
+}
+
+ext {
+    set('springCloudVersion', '2024.0.0')
+}
+
+dependencies {
+    // Spring Cloud Function — single-bean style: one Function<T,R> is all
+    // the application code this service has.
+    implementation 'org.springframework.cloud:spring-cloud-starter-function-web'
+
+    // Spring Cloud Stream with the Kafka binder — SCS wires the Function
+    // to an input topic (documents) and an output topic (documents.enriched)
+    // entirely from application.yml. No Kafka client code in Java.
+    implementation 'org.springframework.cloud:spring-cloud-stream'
+    implementation 'org.springframework.cloud:spring-cloud-stream-binder-kafka'
+
+    // Actuator + Micrometer Prometheus — exposes /actuator/prometheus which
+    // Prometheus scrapes for the Grafana dashboard KPIs.
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'io.micrometer:micrometer-registry-prometheus'
+
+    // AOP — powers the commons-observability @MeterEvent / @Tick aspect
+    // that drives all metric + structured-log emission from a single
+    // declarative point of control.
+    implementation 'org.springframework.boot:spring-boot-starter-aop'
+
+    // Shared observability kit (@MeterEvent / @BusinessRule / ProcessContext
+    // / MeterEventAspect). Resolved via the composite-build substitution in
+    // settings.gradle so both this service and package-router share one copy.
+    implementation 'com.demo:commons-observability:1.0.0'
+
+    // SnakeYAML — used by the ServiceCardController to parse the bundled
+    // asyncapi.yaml spec at runtime. (Spring Boot already pulls it in
+    // transitively, but declare it explicitly for clarity.)
+    implementation 'org.yaml:snakeyaml'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+dependencyManagement {
+    imports {
+        mavenBom "org.springframework.cloud:spring-cloud-dependencies:${springCloudVersion}"
+    }
+}
+
+bootJar {
+    archiveFileName = 'app.jar'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
