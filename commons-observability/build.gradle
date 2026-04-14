@@ -1,0 +1,47 @@
+// commons-observability — shared Spring Boot library.
+//
+// Sharable across services (document-enricher, package-router, …) via a
+// Gradle composite build: each consumer service's settings.gradle runs
+// `includeBuild '../commons-observability'`, and a normal project
+// dependency `implementation 'com.demo:commons-observability:1.0.0'`
+// resolves to this build.
+//
+// Kept as a plain library (java-library plugin, NOT spring-boot plugin) so
+// the consumer's bootJar owns the uber-jar layering. Spring Boot runtime
+// bits are marked `compileOnly` — we depend on their APIs but don't ship
+// them; the consumer service provides the actual Spring Boot BOM.
+
+plugins {
+    id 'java-library'
+}
+
+group = 'com.demo'
+version = '1.0.0'
+sourceCompatibility = '17'
+targetCompatibility = '17'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Versions are intentionally fixed to the ones Spring Boot 3.4.x
+    // pulls in; consumer services override through their own BOM.
+    compileOnly 'org.springframework:spring-context:6.1.14'
+    compileOnly 'org.springframework.boot:spring-boot:3.4.4'
+    compileOnly 'org.springframework.boot:spring-boot-autoconfigure:3.4.4'
+    compileOnly 'org.springframework:spring-aop:6.1.14'
+    compileOnly 'org.aspectj:aspectjweaver:1.9.22'
+    compileOnly 'io.micrometer:micrometer-core:1.13.5'
+    compileOnly 'org.slf4j:slf4j-api:2.0.16'
+    compileOnly 'jakarta.annotation:jakarta.annotation-api:2.1.1'
+    // CloudEventEnvelope.unwrap() walks a Jackson JsonNode; Jackson is a
+    // transitive of every Spring Boot consumer, so compileOnly is enough.
+    compileOnly 'com.fasterxml.jackson.core:jackson-databind:2.17.2'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
