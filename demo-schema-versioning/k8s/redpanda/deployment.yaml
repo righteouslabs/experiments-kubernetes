@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redpanda
+  namespace: schema-demo
+  labels:
+    app.kubernetes.io/name: redpanda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redpanda
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redpanda
+    spec:
+      containers:
+        - name: redpanda
+          image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+          # `--mode=dev-container` enables the unsafe-but-fast dev tuning;
+          # we keep the advertised addrs aligned with the in-cluster Service
+          # name so KafkaSource + Broker can reach us as `redpanda:9092`.
+          args:
+            - redpanda
+            - start
+            - --mode=dev-container
+            - --smp=1
+            - --memory=512M
+            - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+            - --advertise-kafka-addr=PLAINTEXT://redpanda.schema-demo.svc.cluster.local:9092
+            - --rpc-addr=0.0.0.0:33145
+            - --advertise-rpc-addr=redpanda.schema-demo.svc.cluster.local:33145
+          ports:
+            - name: kafka
+              containerPort: 9092
+            - name: admin
+              containerPort: 9644
+          volumeMounts:
+            # rpk writes a temporary config into /etc/redpanda; MicroShift's
+            # SCC blocks writes to the image fs by default, so back it with
+            # an emptyDir. The data dir likewise needs to be writable AND
+            # pre-existing (`/var/lib/redpanda/data` is checked at startup).
+            - name: redpanda-config
+              mountPath: /etc/redpanda
+            - name: redpanda-data
+              mountPath: /var/lib/redpanda/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              # Redpanda allocates `--memory=512M` for the engine, plus
+              # seastar overhead; 1Gi is too tight and triggers OOMKill.
+              memory: 1500Mi
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: redpanda-config
+          emptyDir: {}
+        - name: redpanda-data
+          emptyDir: {}

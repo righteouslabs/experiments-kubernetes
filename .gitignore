@@ -38,3 +38,16 @@ lowcode-scf/public/
 dashboard/lowcode/asyncapi.yaml
 dashboard/lowcode/public/
 
+# Python / uv / tilt
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+.pyright/
+.tilt/
+tilt_modules/
+demo-schema-versioning/**/.uv-cache/
+
+# FastHTML session-signing keys — secret, regenerated on first run
+.sesskey
+

@@ -1,0 +1,18 @@
+apiVersion: sources.knative.dev/v1beta1
+kind: KafkaSource
+metadata:
+  name: events-source
+  namespace: schema-demo
+  labels:
+    tilt-bump: "1778773215"
+spec:
+  consumerGroup: schema-demo-events
+  bootstrapServers:
+    - redpanda.schema-demo.svc.cluster.local:9092
+  topics:
+    - events
+  sink:
+    ref:
+      apiVersion: eventing.knative.dev/v1
+      kind: Broker
+      name: schema-broker

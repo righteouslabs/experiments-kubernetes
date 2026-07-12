@@ -1,0 +1,17 @@
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: trigger-v3
+  namespace: schema-demo
+  labels:
+    schema.version: v3
+spec:
+  broker: schema-broker
+  filter:
+    attributes:
+      schemaversion: v3
+  subscriber:
+    ref:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      name: consumer-v3

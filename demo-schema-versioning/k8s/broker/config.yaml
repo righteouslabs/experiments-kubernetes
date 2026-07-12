@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-broker-config
+  namespace: schema-demo
+  labels:
+    tilt-bump: "1778773215"
+data:
+  default.topic.partitions: "4"
+  default.topic.replication.factor: "1"
+  bootstrap.servers: "redpanda.schema-demo.svc.cluster.local:9092"

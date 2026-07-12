@@ -76,9 +76,3 @@ wired to the Gradle test task. A production build would add:
   for the output topic via a `KafkaConsumer` with a short poll budget.
 - Prometheus scrape step using Spring's `TestRestTemplate` against
   `/actuator/prometheus`.
-
-## Banned-term sanity check
-
-Before committing any change under `package-router/`, run the project
-banned-term audit (see repo root). Client-specific vocabulary must
-not leak into the codebase.

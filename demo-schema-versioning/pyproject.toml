@@ -1,0 +1,31 @@
+[project]
+name = "demo-schema-versioning"
+version = "0.1.0"
+requires-python = ">=3.12"
+# Union of all dependencies across producer, consumer, and gui — used to
+# materialize a single .venv for local dev tooling (ruff, pyright).
+dependencies = [
+  "confluent-kafka>=2.5",
+  "fastapi>=0.115",
+  "httpx>=0.27",
+  "kubernetes>=30.1",
+  "pydantic>=2.7",
+  "python-fasthtml>=0.6",
+  "pyyaml>=6.0",
+  "uvicorn[standard]>=0.30",
+  "watchfiles>=0.22",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.pyright]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+extraPaths = ["."]
+include = ["schemas", "producer", "consumer", "gui"]
+exclude = ["**/__pycache__", ".venv", "**/.venv"]
+reportMissingImports = true
+reportMissingTypeStubs = false

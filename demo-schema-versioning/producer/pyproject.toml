@@ -1,0 +1,13 @@
+[project]
+name = "demo-producer"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "confluent-kafka>=2.5",
+  "pydantic>=2.7",
+  "watchfiles>=0.22",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"

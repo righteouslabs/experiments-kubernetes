@@ -1,0 +1,28 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: events-topic-create
+  namespace: schema-demo
+  annotations:
+    # Re-applies cleanly: delete-then-create via Tilt; without Tilt, kubectl apply
+    # of a Job is idempotent only for the same spec — change topic name -> new Job.
+    helm.sh/hook-weight: "10"
+spec:
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: rpk
+          image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              until rpk -X brokers=redpanda:9092 cluster info >/dev/null 2>&1; do
+                echo "waiting for redpanda..." && sleep 2
+              done
+              rpk -X brokers=redpanda:9092 topic create events --partitions 4 --replicas 1 || true
+              rpk -X brokers=redpanda:9092 topic list

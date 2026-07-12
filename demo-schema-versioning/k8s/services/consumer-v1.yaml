@@ -1,0 +1,28 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: consumer-v1
+  namespace: schema-demo
+  labels:
+    app.kubernetes.io/part-of: demo-schema-versioning
+    schema.version: v1
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "1"
+        tilt-bump: "1778772970-r2"
+        autoscaling.knative.dev/max-scale: "3"
+    spec:
+      containers:
+        - image: dev.local/demo-consumer:dev
+          imagePullPolicy: Never
+          env:
+            - name: SCHEMA_VERSION
+              value: "v1"
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080

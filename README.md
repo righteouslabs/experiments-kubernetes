@@ -183,6 +183,27 @@ docker compose down --volumes
 
 ---
 
+## Schema-versioning demo (Python + Knative attribute routing)
+
+A fully Python-based variant of the versioned-routing story lives in
+[`demo-schema-versioning/`](./demo-schema-versioning/). Start it from
+the repo root with:
+
+```bash
+tilt up                       # builds + applies everything
+open http://localhost:8080    # FastAPI + FastHTML control panel
+```
+
+The GUI lets you toggle which schema versions the producer emits, edit
+emitter and consumer-handler Python live, and scaffold an entire new
+version (handler + Service + Trigger YAML) with one click. Routing is
+attribute-based: a Knative `KafkaSource` feeds a Kafka-class `Broker`,
+and one `Trigger` per version filters on the CloudEvent
+`schemaversion` attribute and fans out to `consumer-<version>` Knative
+Services.
+
+---
+
 ## Phase 0: versioned routing (legacy demo)
 
 Phase 0 is the original chapter of the demo — **one consumer, all
