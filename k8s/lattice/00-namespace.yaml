@@ -1,0 +1,9 @@
+# Namespace for the Knative microservice lattice demo.
+# No SCC/pod-security overrides: lattice-functions + Knative queue-proxy run
+# fine under MicroShift's default restricted-v2 (added only if pods reject).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lattice-demo
+  labels:
+    app.kubernetes.io/part-of: lattice-demo

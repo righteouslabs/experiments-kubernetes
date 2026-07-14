@@ -29,8 +29,8 @@ services:
   # =========================================================================
 
   microshift:
-    mem_limit: 12g
-    memswap_limit: 12g
+    mem_limit: 16g
+    memswap_limit: 16g
     ports:
       - "6443:6443"
       - "9000:9000"
@@ -51,6 +51,7 @@ services:
       - ./producer:/workspace/producer:ro
       - ./consumer-service:/workspace/consumer-service:ro
       - ./dashboard:/workspace/dashboard:ro
+      - ./lattice:/workspace/lattice:ro
     entrypoint: /bin/sh
     command:
       - -c
@@ -99,6 +100,11 @@ services:
           echo "  Loading $$img..."
           docker save "$$img" | docker exec -i microshift podman load
         done
+
+        echo ""
+        echo "--- Building & loading lattice-functions ---"
+        docker build -t dev.local/lattice-functions:v1 /workspace/lattice/functions
+        docker save dev.local/lattice-functions:v1 | docker exec -i microshift podman load
 
         echo ""
         echo "--- Verifying images in MicroShift ---"
@@ -210,6 +216,65 @@ services:
         kubectl -n versioned-demo wait --for=condition=available deployment/producer     --timeout=300s
         kubectl -n versioned-demo wait --for=condition=available deployment/consumer      --timeout=300s
         kubectl -n versioned-demo wait --for=condition=available deployment/dashboard    --timeout=300s
+
+        # --- Knative Serving + Kourier + Eventing + Kafka Broker (v1.22) ---
+        echo ""
+        echo "[8/9] Installing Knative..."
+
+        # SCC: kourier gateway (runAsUser 65534) and kafka data plane
+        # (runAsUser 1001) use fixed non-root UIDs outside restricted-v2's
+        # namespace UID range; nonroot-v2 allows any non-root UID.
+        kubectl patch scc nonroot-v2 --type=json \
+          -p='[{"op":"add","path":"/users/-","value":"system:serviceaccount:kourier-system:default"}]' 2>/dev/null || true
+        kubectl patch scc nonroot-v2 --type=json \
+          -p='[{"op":"add","path":"/users/-","value":"system:serviceaccount:knative-eventing:knative-kafka-broker-data-plane"}]' 2>/dev/null || true
+
+        kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.22.1/serving-crds.yaml
+        kubectl wait --for=condition=Established crd/services.serving.knative.dev --timeout=120s
+        kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.22.1/serving-core.yaml
+        kubectl apply -f https://github.com/knative-extensions/net-kourier/releases/download/knative-v1.22.1/kourier.yaml
+
+        kubectl patch configmap/config-network -n knative-serving --type merge \
+          -p '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
+        kubectl patch configmap/config-deployment -n knative-serving --type merge \
+          -p '{"data":{"registries-skipping-tag-resolving":"dev.local"}}'
+        kubectl patch configmap/config-domain -n knative-serving --type merge \
+          -p '{"data":{"svc.cluster.local":""}}'
+
+        kubectl apply -f https://github.com/knative/eventing/releases/download/knative-v1.22.2/eventing-crds.yaml
+        kubectl wait --for=condition=Established crd/brokers.eventing.knative.dev --timeout=120s
+        kubectl apply -f https://github.com/knative/eventing/releases/download/knative-v1.22.2/eventing-core.yaml
+        kubectl apply -f https://github.com/knative-extensions/eventing-kafka-broker/releases/download/knative-v1.22.2/eventing-kafka-controller.yaml
+        kubectl apply -f https://github.com/knative-extensions/eventing-kafka-broker/releases/download/knative-v1.22.2/eventing-kafka-broker.yaml
+
+        echo "Waiting for Knative deployments..."
+        kubectl -n knative-serving  wait --for=condition=available deployment --all --timeout=600s
+        kubectl -n kourier-system   wait --for=condition=available deployment --all --timeout=600s
+        kubectl -n knative-eventing wait --for=condition=available deployment --all --timeout=600s
+
+        # --- Lattice demo (manifests owned by lattice track) ---
+        echo ""
+        echo "[9/9] Deploying lattice demo..."
+        # Staged apply: one kubectl apply can only create ONE ksvc revision,
+        # so v1 templates go first (wait Ready), then v2 templates + traffic
+        # split, then triggers. File order/names are load-bearing.
+        kubectl apply -f /k8s/lattice/00-namespace.yaml
+        kubectl apply -f /k8s/lattice/01-broker-config.yaml
+        kubectl apply -f /k8s/lattice/02-broker.yaml
+        kubectl -n lattice-demo wait --for=condition=Ready broker/lattice --timeout=300s
+
+        kubectl apply -f /k8s/lattice/10-order-gen-v1.yaml
+        kubectl apply -f /k8s/lattice/20-enricher-v1.yaml
+        kubectl apply -f /k8s/lattice/30-archiver.yaml
+        kubectl -n lattice-demo wait --for=condition=Ready ksvc/order-gen ksvc/enricher ksvc/archiver --timeout=300s
+
+        kubectl apply -f /k8s/lattice/11-order-gen-v2.yaml
+        kubectl apply -f /k8s/lattice/21-enricher-v2.yaml
+        kubectl -n lattice-demo wait --for=condition=Ready ksvc/order-gen ksvc/enricher --timeout=300s
+
+        kubectl apply -f /k8s/lattice/40-triggers.yaml
+        kubectl apply -f /k8s/lattice/dashboard-rbac.yaml
+        kubectl -n lattice-demo wait --for=condition=Ready trigger --all --timeout=300s
 
         echo ""
         echo "============================================"

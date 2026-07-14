@@ -1,0 +1,28 @@
+# Node: archiver (terminal sink) — writes enriched orders to MongoDB
+# (mongodb.versioned-demo, db latticedb, collection orders; MONGO_URI default
+# in the image). Returns 202, no CE reply; Mongo failure -> 500 -> broker retry.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: archiver
+  namespace: lattice-demo
+spec:
+  template:
+    metadata:
+      name: archiver-v1
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+    spec:
+      containers:
+        - image: dev.local/lattice-functions:v1
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SPRING_CLOUD_FUNCTION_DEFINITION
+              value: archive
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi

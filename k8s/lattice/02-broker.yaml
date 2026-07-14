@@ -1,0 +1,19 @@
+# The event bus of the lattice: Kafka-class Broker `lattice`.
+# All producers POST here; Triggers fan events out per-filter.
+apiVersion: eventing.knative.dev/v1
+kind: Broker
+metadata:
+  name: lattice
+  namespace: lattice-demo
+  annotations:
+    eventing.knative.dev/broker.class: Kafka
+spec:
+  config:
+    apiVersion: v1
+    kind: ConfigMap
+    name: kafka-broker-config
+    namespace: lattice-demo
+  delivery:
+    retry: 5
+    backoffPolicy: exponential
+    backoffDelay: PT0.5S

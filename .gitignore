@@ -1,13 +1,21 @@
-# Java
+# Java / Maven / Gradle
 target/
+build/
+.gradle/
 *.class
 *.jar
 *.war
 *.ear
 *.log
-.mvn/wrapper/maven-wrapper.jar
 
-# IDE
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ruff_cache/
+
+# IDE / editor
 .idea/
 *.iml
 .vscode/

@@ -1,0 +1,35 @@
+##
+## RBAC for the dashboard's lattice view (/lattice).
+##
+## Lets the `dashboard` ServiceAccount (namespace versioned-demo, see
+## k8s/services/dashboard.yaml) read Knative Serving + Eventing topology
+## in the lattice-demo namespace via the Kubernetes API.
+##
+## Apply after the lattice-demo namespace exists.
+##
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dashboard-lattice-reader
+  namespace: lattice-demo
+rules:
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["services", "revisions", "routes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["eventing.knative.dev"]
+    resources: ["triggers", "brokers"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dashboard-lattice-reader
+  namespace: lattice-demo
+subjects:
+  - kind: ServiceAccount
+    name: dashboard
+    namespace: versioned-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dashboard-lattice-reader

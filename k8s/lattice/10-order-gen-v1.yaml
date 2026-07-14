@@ -1,0 +1,35 @@
+# Node: order-gen revision v1 (self-driven emitter, ce-source /lattice/order-gen-v1).
+# Stage 1 of 2: pins traffic to v1 only; 11-order-gen-v2.yaml adds the v2
+# revision + final traffic split (one kubectl apply = one revision).
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: order-gen
+  namespace: lattice-demo
+spec:
+  template:
+    metadata:
+      name: order-gen-v1
+      annotations:
+        autoscaling.knative.dev/minScale: "1" # emitter gets no HTTP traffic; must stay up
+    spec:
+      containers:
+        - image: dev.local/lattice-functions:v1
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ORDER_GEN_ENABLED
+              value: "true"
+            - name: ORDER_INTERVAL_MS
+              value: "6000"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+  traffic:
+    - revisionName: order-gen-v1
+      tag: v1
+      percent: 100
+      latestRevision: false

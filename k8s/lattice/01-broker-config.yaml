@@ -1,0 +1,11 @@
+# Kafka broker config for Broker `lattice`: points at the versioned-demo
+# single-node Kafka (replication factor MUST stay 1 — one broker only).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-broker-config
+  namespace: lattice-demo
+data:
+  bootstrap.servers: kafka.versioned-demo.svc.cluster.local:9092
+  default.topic.partitions: "10"
+  default.topic.replication.factor: "1"

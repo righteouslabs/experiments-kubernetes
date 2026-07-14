@@ -1,0 +1,10 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: lattice-functions
+  cloud:
+    function:
+      # enrich | archive — unset for the order-gen role
+      definition: ${SPRING_CLOUD_FUNCTION_DEFINITION:}

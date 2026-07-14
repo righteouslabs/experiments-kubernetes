@@ -1,0 +1,33 @@
+# Node: enricher revision v1 (basic enrichment, replies lattice.order.enriched).
+# Stage 1 of 2: pins traffic to v1; 21-enricher-v2.yaml adds v2 + final split.
+# minScale 0: scale-to-zero is a demoed feature — pods appear when events flow.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: enricher
+  namespace: lattice-demo
+spec:
+  template:
+    metadata:
+      name: enricher-v1
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+    spec:
+      containers:
+        - image: dev.local/lattice-functions:v1
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SPRING_CLOUD_FUNCTION_DEFINITION
+              value: enrich
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+  traffic:
+    - revisionName: enricher-v1
+      tag: v1
+      percent: 100
+      latestRevision: false

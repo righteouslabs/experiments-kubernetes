@@ -1,0 +1,60 @@
+# Edges of the lattice. Trigger names ARE consumer-group identity — never
+# rename. Rewiring an edge = patching spec.subscriber, no redeploys.
+#
+# order-gen-v1 --(order.created)--> enricher v1 (pinned tag URL)
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: order-created-from-v1
+  namespace: lattice-demo
+spec:
+  broker: lattice
+  filter:
+    attributes:
+      type: lattice.order.created
+      source: /lattice/order-gen-v1
+  subscriber:
+    uri: http://v1-enricher.lattice-demo.svc.cluster.local
+---
+# order-gen-v2 --(order.created)--> enricher v2 (pinned tag URL)
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: order-created-from-v2
+  namespace: lattice-demo
+spec:
+  broker: lattice
+  filter:
+    attributes:
+      type: lattice.order.created
+      source: /lattice/order-gen-v2
+  subscriber:
+    uri: http://v2-enricher.lattice-demo.svc.cluster.local
+---
+# any enricher --(order.enriched)--> archiver (by ksvc ref, follows traffic split)
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: enriched-to-archiver
+  namespace: lattice-demo
+spec:
+  broker: lattice
+  filter:
+    attributes:
+      type: lattice.order.enriched
+  subscriber:
+    ref:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      name: archiver
+---
+# catch-all audit edge: every event on the broker --> dashboard event feed
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: all-events-to-dashboard
+  namespace: lattice-demo
+spec:
+  broker: lattice
+  subscriber:
+    uri: http://dashboard.versioned-demo.svc.cluster.local:5001/lattice/events

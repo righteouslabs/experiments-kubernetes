@@ -1,0 +1,39 @@
+# Node: order-gen revision v2 (slower emitter, ce-source /lattice/order-gen-v2).
+# Stage 2 of 2: apply AFTER 10-order-gen-v1.yaml is Ready. Both revisions stay
+# alive (minScale 1) because they are self-driven, not request-driven.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: order-gen
+  namespace: lattice-demo
+spec:
+  template:
+    metadata:
+      name: order-gen-v2
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+    spec:
+      containers:
+        - image: dev.local/lattice-functions:v1
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ORDER_GEN_ENABLED
+              value: "true"
+            - name: ORDER_INTERVAL_MS
+              value: "9000"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+  traffic:
+    - revisionName: order-gen-v1
+      tag: v1
+      percent: 0
+      latestRevision: false
+    - revisionName: order-gen-v2
+      tag: v2
+      percent: 100
+      latestRevision: false

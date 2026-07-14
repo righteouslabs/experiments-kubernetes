@@ -1,0 +1,11 @@
+# Normalize line endings
+* text=auto
+
+# Shell scripts must stay LF
+*.sh text eol=lf
+
+# Binaries
+*.png binary
+*.jpg binary
+*.gif binary
+*.jar binary
